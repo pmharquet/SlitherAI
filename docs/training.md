@@ -89,6 +89,8 @@ Chaque session est stockée sous `runs/<date-heure>/` :
 
 Après arrêt ou extinction du PC, ouvrir l'interface et cliquer sur **Reprendre**. Une génération incomplète est recommencée. Les paramètres de simulation sauvegardés sont réutilisés ; « Générations » indique le nombre de générations supplémentaires à exécuter. Les fichiers pickle sont des sauvegardes Python locales : le chargeur n'est prévu que pour les sauvegardes créées par ce projet.
 
+`sensor_chunk` choisit la taille des blocs de raycasts (`4`, `8` ou `16`) sans changer le schéma d'observation. Un nouveau run utilise `4` par défaut. En reprise stricte, l'option omise hérite de `settings.json` ; une valeur explicitement différente est refusée. Au warm-start, l'omission hérite aussi du checkpoint source, tandis qu'une valeur fournie sélectionne le lot du nouveau run. Les settings de destination enregistrent la valeur effective. Les anciens settings sans ce champ sont interprétés comme `4`.
+
 `--initialize-from checkpoint-N` démarre une nouvelle session depuis toute la population vivante d'un checkpoint local. Ce n'est pas une reprise : `--resume` et `--initialize-from` sont exclusifs. Le run de destination doit être vide, la population conserve son effectif, les paramètres physiques et la récompense doivent correspondre ; seuls le nombre de cartes, la taille de lot du capteur et le mode capteur peuvent différer. Sans `--sensor-version`, le nouveau run hérite du mode source. Un changement de mode doit être indiqué explicitement. Le compteur d'innovation global, l'indexeur de neurones et l'état aléatoire Python du checkpoint sont conservés ; le cache de déduplication des innovations de la génération est vidé, et la spéciation est recalibrée sur la population importée. Les scores précédents ne sont jamais reportés.
 
 Les versions de récompense et de protocole sont enregistrées dans `settings.json`. Les anciennes sessions sont conservées mais ne peuvent pas être reprises avec l'objectif v2 : leurs scores et compteurs de stagnation ne sont pas comparables. Leurs configurations restent lisibles pour l'analyse avec la récompense historique `legacy-v1` et `configs/neat-legacy.ini`.
@@ -102,7 +104,7 @@ En ligne de commande :
 Pour un nouveau run explicitement aligné sur la géométrie propre exportée, en important une population précédente :
 
 ```powershell
-.\.venv\Scripts\python.exe -m slitherai.train --run runs/warmstart-export --initialize-from runs/experience/checkpoint-72 --maps 64 --worms 16 --population 256 --generations 50 --seconds 90 --device cuda --sensor-version export-v1
+.\.venv\Scripts\python.exe -m slitherai.train --run runs/warmstart-export --initialize-from runs/experience/checkpoint-72 --maps 64 --worms 16 --population 256 --generations 50 --seconds 90 --device cuda --sensor-version export-v1 --sensor-chunk 8
 ```
 
 ## Exploiter les enregistrements humains

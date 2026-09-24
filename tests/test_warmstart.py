@@ -143,7 +143,7 @@ def test_warmstart_preserves_population_resets_evidence_and_records_provenance(t
                                             sensor_version='export-v1')
         trainer = Trainer(target_config, destination, device='cpu', seed=999, validation_every=0)
         trainer.train(population=4, generations=1, seconds=.1, initialize_from=checkpoint,
-                      sensor_version_explicit=True)
+                      sensor_version_explicit=True, sensor_chunk_explicit=True)
     finally:
         random.setstate(caller_rng)
         np.random.set_state(caller_np_rng)

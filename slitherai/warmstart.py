@@ -84,12 +84,13 @@ def initialize_from_checkpoint(
     destination: str | Path,
     *,
     sensor_version_explicit: bool = False,
+    sensor_chunk_explicit: bool = False,
 ) -> tuple[neat.Population, dict]:
     """Load and reset the live population for generation zero of a new run.
 
-    If the caller did not explicitly select a sensor version, the source mode
-    is inherited. An explicit target mode permits a deliberate cross-sensor
-    warm-start after the physical/reward configuration has been checked.
+    If the caller did not explicitly select a sensor version or raycast chunk,
+    the source setting is inherited. An explicit target mode permits a
+    deliberate cross-sensor warm-start after compatibility checks.
     """
     checkpoint_path = Path(checkpoint).resolve()
     destination_path = Path(destination).resolve()
@@ -133,7 +134,11 @@ def initialize_from_checkpoint(
         raise ValueError('Warm-start requires the same reward version')
     destination_sensor_version = (target_config.sensor_version if sensor_version_explicit
                                   else source_sensor_version)
-    effective_target_config = dataclasses.replace(target_config, sensor_version=destination_sensor_version)
+    destination_sensor_chunk = (target_config.sensor_chunk if sensor_chunk_explicit
+                                else source_config.sensor_chunk)
+    effective_target_config = dataclasses.replace(
+        target_config, sensor_version=destination_sensor_version,
+        sensor_chunk=destination_sensor_chunk).validate()
 
     try:
         population = neat.Checkpointer.restore_checkpoint(str(checkpoint_path))
@@ -197,6 +202,10 @@ def initialize_from_checkpoint(
         'destination_sensor_version': destination_sensor_version,
         'destination_sensor_version_explicit': bool(sensor_version_explicit),
         'sensor_mode_changed': source_sensor_version != destination_sensor_version,
+        'source_sensor_chunk': source_config.sensor_chunk,
+        'destination_sensor_chunk': destination_sensor_chunk,
+        'destination_sensor_chunk_explicit': bool(sensor_chunk_explicit),
+        'sensor_chunk_changed': source_config.sensor_chunk != destination_sensor_chunk,
         'source_settings_sha256': _sha256_bytes(settings_bytes),
         'source_config_sha256': _canonical_sha256(source_config_values),
         'source_schema_sha256': _sha256_bytes(schema_bytes),

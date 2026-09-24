@@ -256,7 +256,8 @@ class Trainer:
                         metrics={key:value.tolist() for key,value in values.items()}))
 
     def train(self, population=256, generations=50, seconds=90., resume=None,
-              initialize_from=None, sensor_version_explicit=False):
+              initialize_from=None, sensor_version_explicit=False,
+              sensor_chunk_explicit=False):
         if population < 4 or generations < 1 or seconds <= 0:
             raise ValueError('Invalid training limits')
         if resume and initialize_from:
@@ -273,8 +274,14 @@ class Trainer:
             pop = neat.Checkpointer.restore_checkpoint(str(resume))
             self.population_size = pop.config.pop_size
             settings = read_json(self.run / 'settings.json')
-            if settings and (dataclasses.asdict(SimConfig.from_dict(settings['config'])) != dataclasses.asdict(self.config)
-                             or settings['seed'] != self.seed):
+            saved_config = SimConfig.from_dict(settings['config']).validate()
+            if sensor_chunk_explicit and self.config.sensor_chunk != saved_config.sensor_chunk:
+                raise ValueError('Resume requires the saved sensor_chunk; use a new run to change it')
+            if not sensor_chunk_explicit and self.config.sensor_chunk != saved_config.sensor_chunk:
+                self.config = dataclasses.replace(
+                    self.config, sensor_chunk=saved_config.sensor_chunk).validate()
+            if (dataclasses.asdict(saved_config) != dataclasses.asdict(self.config)
+                    or settings['seed'] != self.seed):
                 raise ValueError('Resume requires the same simulation config and seed')
             saved_config = settings.get('config', {})
             saved_schema_version = _saved_sensor_version(self.run, saved_config)
@@ -285,10 +292,14 @@ class Trainer:
                 raise ValueError('Warm-start destination must be a new empty run directory')
             pop, initialization = initialize_from_checkpoint(
                 initialize_from, self.config, self.run,
-                sensor_version_explicit=sensor_version_explicit)
+                sensor_version_explicit=sensor_version_explicit,
+                sensor_chunk_explicit=sensor_chunk_explicit)
             if not sensor_version_explicit and self.config.sensor_version != initialization['destination_sensor_version']:
                 self.config = dataclasses.replace(
                     self.config, sensor_version=initialization['destination_sensor_version']).validate()
+            if not sensor_chunk_explicit and self.config.sensor_chunk != initialization['destination_sensor_chunk']:
+                self.config = dataclasses.replace(
+                    self.config, sensor_chunk=initialization['destination_sensor_chunk']).validate()
             if population != len(pop.population):
                 raise ValueError('Warm-start preserves the source population size; set --population to '
                                  f'{len(pop.population)}')
@@ -335,6 +346,8 @@ def main():
     p.add_argument('--arena-radius', type=float, default=2400)
     p.add_argument('--device', choices=['auto', 'cpu', 'cuda'], default='auto')
     p.add_argument('--sensor-version', choices=['legacy-v1', 'export-v1'])
+    p.add_argument('--sensor-chunk', type=int, choices=[4, 8, 16],
+                   help='raycast batch size; default 4, omitted on resume inherits saved settings')
     p.add_argument('--seed', type=int, default=1)
     p.add_argument('--validation-every', type=int, default=5)
     start_from = p.add_mutually_exclusive_group()
@@ -343,10 +356,12 @@ def main():
     args = p.parse_args()
     config = SimConfig(maps=args.maps, worms=args.worms, foods=args.foods,
                        body_points=args.body_points, arena_radius=args.arena_radius,
+                       sensor_chunk=args.sensor_chunk or 4,
                        sensor_version=args.sensor_version or 'legacy-v1')
     trainer = Trainer(config, args.run, args.device, args.seed, args.validation_every)
     trainer.train(args.population, args.generations, args.seconds, args.resume,
                   initialize_from=args.initialize_from,
-                  sensor_version_explicit=args.sensor_version is not None)
+                  sensor_version_explicit=args.sensor_version is not None,
+                  sensor_chunk_explicit=args.sensor_chunk is not None)
 
 if __name__ == '__main__': main()

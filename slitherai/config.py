@@ -41,6 +41,8 @@ class SimConfig:
         for name in ('maps', 'worms', 'foods', 'body_points', 'substeps', 'sensor_chunk'):
             if getattr(self, name) < 1:
                 raise ValueError(f'{name} must be positive')
+        if self.sensor_chunk not in (4, 8, 16):
+            raise ValueError('sensor_chunk must be one of 4, 8, or 16')
         if self.worms < 2 or self.body_points < 8:
             raise ValueError('Need >=2 worms and >=8 body points')
         if not 0 <= self.preys <= self.foods:
