@@ -20,8 +20,34 @@ import torch
 
 from . import evaluation
 from .config import SimConfig
-from .schema import INPUTS, OUTPUTS, VERSION
+from .evaluate_holdout import _validate_genome_config
+from .schema import INPUTS, OUTPUTS, VERSION, contract
 from .sim import WorldBatch, adaptive_sensor_tiling
+
+def sensor_version_from_schema(value):
+    """Resolve trusted model schemas without depending on newer simulator modules."""
+    if value == VERSION:
+        return 'legacy-v1'
+    if not isinstance(value, dict):
+        return None
+    contract_versions = {
+        'legacy-v1': (VERSION, 'sim_physical_radius_along_body_3r'),
+        'export-v1': ('slither-neat-530-export-v1',
+                      'extension_0_6_0_radius_2r_plus_3_spatial_cutoff_2r'),
+    }
+    for sensor_version, (schema_version, self_body_model) in contract_versions.items():
+        expected = dict(contract())
+        expected.update(version=schema_version, sensor_version=sensor_version,
+                        self_body_model=self_body_model)
+        if value == expected:
+            return sensor_version
+    # Pre-sensor-version run artifacts had this exact legacy mapping.
+    legacy = dict(contract())
+    legacy.pop('sensor_version', None)
+    legacy.pop('self_body_model', None)
+    if value == legacy:
+        return 'legacy-v1'
+    return None
 
 
 def _fixed_actions(world):
@@ -923,8 +949,18 @@ def load_run_champion(run_dir, model_payload=None):
         payload = pickle.load(stream)
     if not isinstance(payload, dict) or 'genome' not in payload or 'config' not in payload:
         raise ValueError(f'Expected project genome payload in {genome_path}')
-    if payload.get('schema') != VERSION:
-        raise ValueError(f'Genome payload schema {payload.get("schema")!r} does not match {VERSION!r}')
+    sim_config = SimConfig.from_dict(settings['config']).validate()
+    payload_sensor_version = sensor_version_from_schema(payload.get('schema'))
+    if payload_sensor_version is None:
+        raise ValueError(f'Genome payload schema {payload.get("schema")!r} is unsupported')
+    settings_sensor_version = settings['config'].get('sensor_version', 'legacy-v1')
+    sim_sensor_version = getattr(sim_config, 'sensor_version', settings_sensor_version)
+    if sim_sensor_version != settings_sensor_version:
+        raise ValueError('Parsed simulation config sensor version disagrees with run settings')
+    if payload_sensor_version != settings_sensor_version:
+        raise ValueError(
+            f'Genome payload sensor version {payload_sensor_version!r} does not match '
+            f'run settings {settings_sensor_version!r}')
     genome, neat_config = payload['genome'], payload['config']
     genome_config = getattr(neat_config, 'genome_config', None)
     if (genome_config is None or len(getattr(genome_config, 'input_keys', ())) != INPUTS
@@ -932,6 +968,7 @@ def load_run_champion(run_dir, model_payload=None):
         raise ValueError(f'Genome payload must configure {INPUTS} inputs and {len(OUTPUTS)} outputs')
     if not hasattr(genome, 'key') or not hasattr(genome, 'nodes') or not hasattr(genome, 'connections'):
         raise ValueError(f'Genome payload in {genome_path} has an unsupported genome object')
+    _validate_genome_config(genome, neat_config)
     gene_data = dict(
         nodes=[dict(id=int(key), genes=dict(sorted(vars(gene).items())))
                for key, gene in sorted(genome.nodes.items())],
@@ -940,14 +977,14 @@ def load_run_champion(run_dir, model_payload=None):
                      for key, gene in sorted(genome.connections.items())])
     gene_fingerprint = hashlib.sha256(json.dumps(
         gene_data, sort_keys=True, separators=(',', ':'), allow_nan=False).encode('utf-8')).hexdigest()
-    return SimConfig.from_dict(settings['config']).validate(), payload['genome'], payload['config'], dict(
+    return sim_config, genome, neat_config, dict(
         run=str(run.resolve()), settings_file=str(settings_path.resolve()),
         settings_file_sha256=hashlib.sha256(settings_path.read_bytes()).hexdigest(),
         genome_file=str(genome_path.resolve()),
         genome_file_sha256=hashlib.sha256(genome_path.read_bytes()).hexdigest(),
         genome_generation=payload.get('generation'), genome_id=genome.key,
         genome_gene_sha256=gene_fingerprint,
-        schema=payload.get('schema'),
+        schema=payload.get('schema'), sensor_version=payload_sensor_version,
     )
 
 

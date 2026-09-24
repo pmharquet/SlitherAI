@@ -13,11 +13,12 @@ from slitherai.benchmark_observation import (
     _capture_episode_trace, _event_difference, _fixed_actions, build_long_body_fixture,
     load_run_champion, run_adaptive_tile_sweep, run_long_body_fixture, run_paired_policy_episode,
     run_tiling_trace_diagnostic,
+    sensor_version_from_schema,
     sensor_candidate_profile, sensor_ray_block_count,
 )
 from slitherai.config import SimConfig
 from slitherai.network import load_config
-from slitherai.schema import ANGLES, VERSION
+from slitherai.schema import ANGLES, VERSION, contract
 from slitherai.sim import (
     WorldBatch, adaptive_sensor_tiling, choose_sensor_chunk, sensor_tile_work_elements,
 )
@@ -311,6 +312,84 @@ def test_load_run_champion_selects_explicit_payload_and_validates_schema(tmp_pat
     bad_path.write_bytes(pickle.dumps(incompatible))
     with pytest.raises(ValueError, match='530 inputs and 2 outputs'):
         load_run_champion(tmp_path, bad_path)
+
+    wrong_key_order = load_config(4)
+    wrong_key_order.genome_config.input_keys.reverse()
+    incompatible = dict(selected_payload, config=wrong_key_order)
+    bad_path = tmp_path/'wrong-key-order.pkl'
+    bad_path.write_bytes(pickle.dumps(incompatible))
+    with pytest.raises(ValueError, match='input/output keys'):
+        load_run_champion(tmp_path, bad_path)
+
+    wrong_activation = pickle.loads(pickle.dumps(selected_payload))
+    wrong_activation['genome'].nodes[0].activation = 'tanh'
+    bad_path = tmp_path/'wrong-activation.pkl'
+    bad_path.write_bytes(pickle.dumps(wrong_activation))
+    with pytest.raises(ValueError, match='sigmoid activation and sum aggregation'):
+        load_run_champion(tmp_path, bad_path)
+
+
+def test_sensor_version_schema_normalizer_accepts_legacy_and_export_contracts():
+    assert sensor_version_from_schema(VERSION) == 'legacy-v1'
+    assert sensor_version_from_schema(contract()) == 'legacy-v1'
+    legacy_contract = dict(contract())
+    legacy_contract.update(
+        version=VERSION, sensor_version='legacy-v1',
+        self_body_model='sim_physical_radius_along_body_3r')
+    assert sensor_version_from_schema(legacy_contract) == 'legacy-v1'
+    pre_version_contract = dict(legacy_contract)
+    pre_version_contract.pop('sensor_version')
+    pre_version_contract.pop('self_body_model')
+    assert sensor_version_from_schema(pre_version_contract) == 'legacy-v1'
+    assert sensor_version_from_schema({'version': VERSION, 'sensor_version': 'export-v1'}) is None
+
+    export_contract = dict(contract())
+    export_contract.update(
+        version='slither-neat-530-export-v1', sensor_version='export-v1',
+        self_body_model='extension_0_6_0_radius_2r_plus_3_spatial_cutoff_2r')
+    assert sensor_version_from_schema(export_contract) == 'export-v1'
+    export_contract['version'] = VERSION
+    assert sensor_version_from_schema(export_contract) is None
+    assert sensor_version_from_schema({'sensor_version':'unknown-v9'}) is None
+
+
+def test_load_run_champion_accepts_matching_export_schema_and_rejects_cross_mode(tmp_path, monkeypatch):
+    import slitherai.benchmark_observation as benchmark
+
+    class SensorAwareConfig:
+        def __init__(self, sensor_version):
+            self.sensor_version = sensor_version
+
+        @classmethod
+        def from_dict(cls, data):
+            return cls(data.get('sensor_version', 'legacy-v1'))
+
+        def validate(self):
+            return self
+
+    monkeypatch.setattr(benchmark, 'SimConfig', SensorAwareConfig)
+    neat_config = load_config(4)
+    population = neat.Population(neat_config)
+    genome = next(iter(population.population.values()))
+    export_contract = dict(contract())
+    export_contract.update(
+        version='slither-neat-530-export-v1', sensor_version='export-v1',
+        self_body_model='extension_0_6_0_radius_2r_plus_3_spatial_cutoff_2r')
+    model_path = tmp_path/'export-model.pkl'
+    model_path.write_bytes(pickle.dumps(dict(
+        genome=genome, config=neat_config, schema=export_contract, generation=1)))
+
+    (tmp_path/'settings.json').write_text(
+        json.dumps({'config': {'sensor_version':'export-v1'}}), encoding='utf-8')
+    sim_config, selected, _, source = load_run_champion(tmp_path, model_path)
+    assert sim_config.sensor_version == 'export-v1'
+    assert selected.key == genome.key
+    assert source['sensor_version'] == 'export-v1'
+
+    (tmp_path/'settings.json').write_text(
+        json.dumps({'config': {'sensor_version':'legacy-v1'}}), encoding='utf-8')
+    with pytest.raises(ValueError, match='does not match run settings'):
+        load_run_champion(tmp_path, model_path)
 
 
 def test_cpu_long_body_death_and_crowding_fixture_is_exact_across_chunks():
