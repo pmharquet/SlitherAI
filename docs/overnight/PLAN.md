@@ -19,7 +19,7 @@ Améliorer le modèle NEAT de Slither jusqu'au **25 septembre 2026 à 08:00 Euro
 2. Audit JSON compact reproductible : agent `audit_tooling`.
 3. Performance et fidélité des observations/actions : agent `performance_review`.
 4. Le superviseur examine les résultats, attribue un périmètre de fichiers sans chevauchement, relit chaque diff, demande corrections et valide les tests pertinents.
-5. Chaque agent d'implémentation commet uniquement ses fichiers, localement. Pas de `git add .`, pas de push. L'arbre partagé exige de coordonner les commits et toute modification d'un fichier possédé par un autre agent.
+5. Chaque agent d'implémentation commet uniquement ses fichiers, localement : `git add -- <ses fichiers>` puis **`git commit --only -- <ses fichiers>`** pour exclure les fichiers stagés par un autre agent. Pas de `git add .`, pas de push. Ne pas reset/amend/réécrire la branche partagée ; en cas de mélange accidentel, prévenir le superviseur et corriger par un nouveau commit. L'arbre partagé exige de coordonner les commits et toute modification d'un fichier possédé par un autre agent.
 6. Un seul responsable des démarrages/arrêts d'entraînement à la fois. Ne pas interrompre une génération pour un changement cosmétique. Les essais GPU concurrents doivent être évités ; réserver une fenêtre de benchmark si nécessaire.
 
 ## Boucle de suivi, toutes les 15 minutes

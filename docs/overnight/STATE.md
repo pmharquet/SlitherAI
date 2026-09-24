@@ -29,6 +29,8 @@ Mise à jour : 24 septembre 2026, environ 18:50 Europe/Paris.
 - Hypothèse min_species_size=2 rejetée pour la population actuelle : allocation G4 calculée à partir des mêmes fitness donne 74 élites +182 enfants avec les deux réglages, aucune espèce au plancher ; bénéfice attendu nul. Pas de branche lancée.
 - Rejouabilité à éclaircir : G1 est exact, mais replay manuel des transitions suivantes de l'agent diffère sur 33 génomes uniquement pour clés structurelles malgré poids/biais/RNG concordants. Ne pas conclure à un défaut de production ni au hash Python sans reproduire le chemin complet Population.run. Agent chargé d'un diagnostic minimal après rapport.
 - Jeu final indépendant réservé dans PLAN.md (graine741852963,64cartes90s) ; ne pas le consommer lors des réglages.
+- Inventaire des paramètres `a21ed67`, corrections d'unités `19f2db5`, tests numériques de bord `27068ac` examinés. Aucun défaut de signe/rotation/censure du bord constaté dans les cas analytiques ; 3 tests agent passent. L'agent prépare désormais l'outil de comparaison finale indépendant, CPU uniquement pour ses tests.
+- Audit initial `2b43458` : revue demande de corriger les moyennes de sélection (history.mean) distinguées des moyennes brutes par partie et de préserver les scripts/preuves du replay. Un mélange de staging a été corrigé par l'agent avant instruction d'arrêt ; les commits antérieurs sont vérifiés préservés. Nouvelle règle `git commit --only` et aucune réécriture partagée.
 
 ## Livrables attendus
 
