@@ -70,3 +70,9 @@ Le warm-start conserve les génomes, gènes, compteurs d’innovations et état 
 Le dashboard restera sur la référence : `/api/start` sait créer un run neuf ou reprendre strictement, mais n’accepte pas `--initialize-from`. La commande lance donc le pilote directement, sans modifier `runs/last-run.json`; l’interface ne le suivra ni ne le contrôlera. Surveiller les fichiers status du pilote et les logs ci-dessus. Le pilote n’est pas déployé dans le service par cette préparation.
 
 Interpréter une différence de validation comme un signal limité : le warm-start réinitialise la spéciation et les fitness, et la seule variation de chunk déjà mesurée en CUDA n’a pas démontré la parité exacte des trajectoires. Aucune conclusion sur l’effet causal du chunk ou sur le transfert au jeu réel ne découle de cinq générations parallèles.
+
+## Tentative de lancement du 25 septembre 2026
+
+Après autorisation, les trois empreintes source ont été revérifiées et concordaient. L’API indiquait le run de référence actif en phase `training`; les processus trainer observés appartenaient à ce run. La commande préparée a ensuite été soumise à `exec_command`, qui l’a refusée avant son exécution : `CreateProcess: Rejected(...): blocked by policy` (la commande refusée contenait `Start-Process`). Aucun autre mécanisme de lancement n’a été essayé.
+
+État lecture seule observé à 00:43:41 Europe/Paris : le run de référence était toujours actif, génération 21/50, 768/1280 épisodes, environ 37,3 s par épisode ; `nvidia-smi` indiquait 353/8188 MiB et 38 % d’utilisation. Aucun répertoire `chunk8-pilot-cp21-*` n’existait. Le pilote n’a donc pas démarré ; seule la référence avançait. La commande reste à lancer par un contexte qui autorise explicitement `Start-Process`, après nouvelle vérification des hashes et du service.
