@@ -1,0 +1,786 @@
+{
+  "allocation": {
+    "comparison": [
+      {
+        "actual_elite_ids": 74,
+        "changed_species_allocations": [
+          {
+            "delta_min2_minus_min4": -1,
+            "min2_spawn": 4,
+            "min4_spawn": 5,
+            "species_id": 1
+          },
+          {
+            "delta_min2_minus_min4": 1,
+            "min2_spawn": 6,
+            "min4_spawn": 5,
+            "species_id": 4
+          },
+          {
+            "delta_min2_minus_min4": 1,
+            "min2_spawn": 5,
+            "min4_spawn": 4,
+            "species_id": 5
+          },
+          {
+            "delta_min2_minus_min4": 1,
+            "min2_spawn": 6,
+            "min4_spawn": 5,
+            "species_id": 13
+          },
+          {
+            "delta_min2_minus_min4": -1,
+            "min2_spawn": 4,
+            "min4_spawn": 5,
+            "species_id": 19
+          },
+          {
+            "delta_min2_minus_min4": -1,
+            "min2_spawn": 4,
+            "min4_spawn": 5,
+            "species_id": 37
+          }
+        ],
+        "effective_minimum": 4,
+        "effective_species_mutant_children": 35.960013870301324,
+        "effective_species_total_spawn": 36.86325504285638,
+        "elite_copies": 74,
+        "elite_only_species": 0,
+        "largest_spawn_share": 0.04296875,
+        "min2_vs_min4_spawn_identical": false,
+        "min_species_size": 4,
+        "mutant_children": 182,
+        "pre_exact_spawn_sum": 252,
+        "spawn_distribution": {
+          "10": 3,
+          "11": 1,
+          "4": 1,
+          "5": 9,
+          "6": 10,
+          "7": 9,
+          "8": 2,
+          "9": 3
+        },
+        "spawn_sum": 256,
+        "species": 38,
+        "species_at_minimum": 1,
+        "top4_spawn": 41,
+        "top4_spawn_share": 0.16015625,
+        "top8_spawn": 76,
+        "top8_spawn_share": 0.296875
+      },
+      {
+        "actual_elite_ids": 74,
+        "effective_minimum": 2,
+        "effective_species_mutant_children": 35.82598795388286,
+        "effective_species_total_spawn": 36.80531152276071,
+        "elite_copies": 74,
+        "elite_only_species": 0,
+        "largest_spawn_share": 0.04296875,
+        "min_species_size": 2,
+        "mutant_children": 182,
+        "pre_exact_spawn_sum": 249,
+        "spawn_distribution": {
+          "10": 3,
+          "11": 1,
+          "4": 3,
+          "5": 5,
+          "6": 12,
+          "7": 9,
+          "8": 2,
+          "9": 3
+        },
+        "spawn_sum": 256,
+        "species": 38,
+        "species_at_minimum": 0,
+        "top4_spawn": 41,
+        "top4_spawn_share": 0.16015625,
+        "top8_spawn": 76,
+        "top8_spawn_share": 0.296875
+      }
+    ],
+    "generation": 3,
+    "source_checkpoint": "C:\\Docker\\SlitherAI\\runs\\20260924-163112-852097\\checkpoint-3"
+  },
+  "neat_python_version": "1.1.0",
+  "pythonhashseed": "0",
+  "replay": [
+    {
+      "actual_population": 256,
+      "compatibility_threshold_expected": 1.8609375,
+      "compatibility_threshold_generated": 1.8609375,
+      "config_pickle_node_indexer_events": [
+        {
+          "node_indexer_next_after": null,
+          "node_indexer_next_before": null,
+          "source": "TrainingReporter.save_genome:champion"
+        },
+        {
+          "node_indexer_next_after": null,
+          "node_indexer_next_before": null,
+          "source": "TrainingReporter.save_genome:best-validation"
+        },
+        {
+          "node_indexer_next_after": [
+            35
+          ],
+          "node_indexer_next_before": [
+            34
+          ],
+          "source": "AtomicCheckpointer.save_checkpoint"
+        }
+      ],
+      "expected_checkpoint_generation": 1,
+      "expected_population": 256,
+      "first_divergent_genome": null,
+      "generated_checkpoint_generation": 1,
+      "generation0_child_parent_pairs": 240,
+      "generation0_founder_distance_range": [
+        1.8889404575784672,
+        2.1561767403204213
+      ],
+      "generation0_founder_distances": [
+        {
+          "checkpoint_species_id": 9,
+          "connection_distance": 1.7607251465475489,
+          "founder_genome_id": 259,
+          "founder_mutation_shape": "node+connection",
+          "nearest_existing_species_id": 6,
+          "new_connection_count_vs_parents": 3,
+          "new_node_count_vs_parents": 1,
+          "node_distance": 0.37778499382229347,
+          "species_id": 9,
+          "total_distance": 2.138510140369842
+        },
+        {
+          "checkpoint_species_id": 10,
+          "connection_distance": 1.744562175652934,
+          "founder_genome_id": 271,
+          "founder_mutation_shape": "node+connection",
+          "nearest_existing_species_id": 5,
+          "new_connection_count_vs_parents": 3,
+          "new_node_count_vs_parents": 1,
+          "node_distance": 0.3683085039437986,
+          "species_id": 10,
+          "total_distance": 2.1128706795967327
+        },
+        {
+          "checkpoint_species_id": 11,
+          "connection_distance": 1.735404506965794,
+          "founder_genome_id": 285,
+          "founder_mutation_shape": "node+connection",
+          "nearest_existing_species_id": 4,
+          "new_connection_count_vs_parents": 3,
+          "new_node_count_vs_parents": 1,
+          "node_distance": 0.37628185569896816,
+          "species_id": 11,
+          "total_distance": 2.111686362664762
+        },
+        {
+          "checkpoint_species_id": 12,
+          "connection_distance": 1.8546963197693551,
+          "founder_genome_id": 297,
+          "founder_mutation_shape": "connection",
+          "nearest_existing_species_id": 1,
+          "new_connection_count_vs_parents": 1,
+          "new_node_count_vs_parents": 0,
+          "node_distance": 0.03424413780911205,
+          "species_id": 12,
+          "total_distance": 1.8889404575784672
+        },
+        {
+          "checkpoint_species_id": 13,
+          "connection_distance": 1.7117891646052077,
+          "founder_genome_id": 303,
+          "founder_mutation_shape": "node+connection",
+          "nearest_existing_species_id": 12,
+          "new_connection_count_vs_parents": 2,
+          "new_node_count_vs_parents": 1,
+          "node_distance": 0.39929722028414344,
+          "species_id": 13,
+          "total_distance": 2.1110863848893513
+        },
+        {
+          "checkpoint_species_id": 14,
+          "connection_distance": 1.760618779935425,
+          "founder_genome_id": 307,
+          "founder_mutation_shape": "node+connection",
+          "nearest_existing_species_id": 4,
+          "new_connection_count_vs_parents": 2,
+          "new_node_count_vs_parents": 1,
+          "node_distance": 0.35398198404466846,
+          "species_id": 14,
+          "total_distance": 2.1146007639800932
+        },
+        {
+          "checkpoint_species_id": 15,
+          "connection_distance": 1.6913335183835387,
+          "founder_genome_id": 314,
+          "founder_mutation_shape": "node+connection",
+          "nearest_existing_species_id": 5,
+          "new_connection_count_vs_parents": 3,
+          "new_node_count_vs_parents": 1,
+          "node_distance": 0.3467055153101139,
+          "species_id": 15,
+          "total_distance": 2.0380390336936527
+        },
+        {
+          "checkpoint_species_id": 16,
+          "connection_distance": 1.7232684926823663,
+          "founder_genome_id": 332,
+          "founder_mutation_shape": "node+connection",
+          "nearest_existing_species_id": 6,
+          "new_connection_count_vs_parents": 3,
+          "new_node_count_vs_parents": 1,
+          "node_distance": 0.3725128123363665,
+          "species_id": 16,
+          "total_distance": 2.0957813050187326
+        },
+        {
+          "checkpoint_species_id": 17,
+          "connection_distance": 1.7236831994250694,
+          "founder_genome_id": 335,
+          "founder_mutation_shape": "node+connection",
+          "nearest_existing_species_id": 6,
+          "new_connection_count_vs_parents": 2,
+          "new_node_count_vs_parents": 1,
+          "node_distance": 0.3531892505708174,
+          "species_id": 17,
+          "total_distance": 2.0768724499958866
+        },
+        {
+          "checkpoint_species_id": 18,
+          "connection_distance": 1.710605867941497,
+          "founder_genome_id": 347,
+          "founder_mutation_shape": "node+connection",
+          "nearest_existing_species_id": 4,
+          "new_connection_count_vs_parents": 2,
+          "new_node_count_vs_parents": 1,
+          "node_distance": 0.3474246631853581,
+          "species_id": 18,
+          "total_distance": 2.058030531126855
+        },
+        {
+          "checkpoint_species_id": 19,
+          "connection_distance": 1.7230454127327166,
+          "founder_genome_id": 350,
+          "founder_mutation_shape": "node+connection",
+          "nearest_existing_species_id": 7,
+          "new_connection_count_vs_parents": 3,
+          "new_node_count_vs_parents": 1,
+          "node_distance": 0.3717141379521536,
+          "species_id": 19,
+          "total_distance": 2.09475955068487
+        },
+        {
+          "checkpoint_species_id": 20,
+          "connection_distance": 1.72084368215441,
+          "founder_genome_id": 351,
+          "founder_mutation_shape": "node+connection",
+          "nearest_existing_species_id": 2,
+          "new_connection_count_vs_parents": 3,
+          "new_node_count_vs_parents": 1,
+          "node_distance": 0.3568811114915753,
+          "species_id": 20,
+          "total_distance": 2.0777247936459853
+        },
+        {
+          "checkpoint_species_id": 21,
+          "connection_distance": 1.7078562322636068,
+          "founder_genome_id": 364,
+          "founder_mutation_shape": "node+connection",
+          "nearest_existing_species_id": 6,
+          "new_connection_count_vs_parents": 2,
+          "new_node_count_vs_parents": 1,
+          "node_distance": 0.3539558795677347,
+          "species_id": 21,
+          "total_distance": 2.0618121118313417
+        },
+        {
+          "checkpoint_species_id": 22,
+          "connection_distance": 1.6738718529047973,
+          "founder_genome_id": 367,
+          "founder_mutation_shape": "node+connection",
+          "nearest_existing_species_id": 3,
+          "new_connection_count_vs_parents": 3,
+          "new_node_count_vs_parents": 1,
+          "node_distance": 0.3652409107168641,
+          "species_id": 22,
+          "total_distance": 2.0391127636216613
+        },
+        {
+          "checkpoint_species_id": 23,
+          "connection_distance": 1.7616879805150447,
+          "founder_genome_id": 376,
+          "founder_mutation_shape": "node+connection",
+          "nearest_existing_species_id": 4,
+          "new_connection_count_vs_parents": 2,
+          "new_node_count_vs_parents": 1,
+          "node_distance": 0.36248886288794907,
+          "species_id": 23,
+          "total_distance": 2.124176843402994
+        },
+        {
+          "checkpoint_species_id": 24,
+          "connection_distance": 1.680148157874929,
+          "founder_genome_id": 406,
+          "founder_mutation_shape": "node+connection",
+          "nearest_existing_species_id": 8,
+          "new_connection_count_vs_parents": 3,
+          "new_node_count_vs_parents": 1,
+          "node_distance": 0.3784292762369805,
+          "species_id": 24,
+          "total_distance": 2.0585774341119096
+        },
+        {
+          "checkpoint_species_id": 25,
+          "connection_distance": 1.7216680348152082,
+          "founder_genome_id": 426,
+          "founder_mutation_shape": "node+connection",
+          "nearest_existing_species_id": 2,
+          "new_connection_count_vs_parents": 3,
+          "new_node_count_vs_parents": 1,
+          "node_distance": 0.3879613259155413,
+          "species_id": 25,
+          "total_distance": 2.1096293607307497
+        },
+        {
+          "checkpoint_species_id": 26,
+          "connection_distance": 1.794914438645016,
+          "founder_genome_id": 438,
+          "founder_mutation_shape": "node+connection",
+          "nearest_existing_species_id": 4,
+          "new_connection_count_vs_parents": 2,
+          "new_node_count_vs_parents": 1,
+          "node_distance": 0.35183246452683475,
+          "species_id": 26,
+          "total_distance": 2.146746903171851
+        },
+        {
+          "checkpoint_species_id": 27,
+          "connection_distance": 1.6915008889551801,
+          "founder_genome_id": 442,
+          "founder_mutation_shape": "node+connection",
+          "nearest_existing_species_id": 5,
+          "new_connection_count_vs_parents": 3,
+          "new_node_count_vs_parents": 1,
+          "node_distance": 0.3678154744704584,
+          "species_id": 27,
+          "total_distance": 2.0593163634256384
+        },
+        {
+          "checkpoint_species_id": 28,
+          "connection_distance": 1.7412726940570313,
+          "founder_genome_id": 444,
+          "founder_mutation_shape": "node+connection",
+          "nearest_existing_species_id": 4,
+          "new_connection_count_vs_parents": 2,
+          "new_node_count_vs_parents": 1,
+          "node_distance": 0.3590797354136477,
+          "species_id": 28,
+          "total_distance": 2.100352429470679
+        },
+        {
+          "checkpoint_species_id": 29,
+          "connection_distance": 1.744470619324392,
+          "founder_genome_id": 468,
+          "founder_mutation_shape": "node+connection",
+          "nearest_existing_species_id": 2,
+          "new_connection_count_vs_parents": 2,
+          "new_node_count_vs_parents": 1,
+          "node_distance": 0.4117061209960295,
+          "species_id": 29,
+          "total_distance": 2.1561767403204213
+        },
+        {
+          "checkpoint_species_id": 30,
+          "connection_distance": 1.7149391117811175,
+          "founder_genome_id": 474,
+          "founder_mutation_shape": "node+connection",
+          "nearest_existing_species_id": 6,
+          "new_connection_count_vs_parents": 2,
+          "new_node_count_vs_parents": 1,
+          "node_distance": 0.3739391640197451,
+          "species_id": 30,
+          "total_distance": 2.0888782758008624
+        }
+      ],
+      "generation0_offspring_with_new_connection_vs_both_parents": 114,
+      "generation0_offspring_with_new_node_vs_both_parents": 31,
+      "generation0_parent_pool_sizes": [
+        11,
+        16,
+        12,
+        11,
+        12,
+        8,
+        6,
+        4
+      ],
+      "generation0_parent_pool_total": 80,
+      "generation0_parent_pool_unique_actual_parents": 80,
+      "generation0_population_nearest_old_rep_median": {
+        "at_or_above_threshold": 27,
+        "connection": 1.7246264251991654,
+        "node": 0.03959676845533883,
+        "total": 1.7773727089252436
+      },
+      "generation0_same_parent_child_pairs": 22,
+      "generation0_speciation_replay_matches_checkpoint": {
+        "founder_genome_ids": true,
+        "species_ids": true
+      },
+      "genome_indexer_next": {
+        "expected": [
+          497
+        ],
+        "generated": [
+          497
+        ]
+      },
+      "innovation_tracker_equal": true,
+      "innovation_tracker_expected_counter": 1231,
+      "innovation_tracker_generated_counter": 1231,
+      "innovation_tracker_generation_key_mismatches": 0,
+      "matching_genomes": 256,
+      "mismatching_genome_ids": [],
+      "new_species_ids": [
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30
+      ],
+      "node_indexer_next": {
+        "expected": [
+          34
+        ],
+        "generated": [
+          34
+        ],
+        "source": null
+      },
+      "population_ids_match": true,
+      "python_rng_equal": true,
+      "species_equal": true,
+      "species_indexer_expected_next": [
+        31
+      ],
+      "species_indexer_generated_next": [
+        31
+      ],
+      "species_mismatch_ids": [],
+      "validation_calls": [
+        {
+          "policy": "neat",
+          "python_rng_unchanged": true
+        },
+        {
+          "policy": "heuristic",
+          "python_rng_unchanged": true
+        },
+        {
+          "policy": "circle",
+          "python_rng_unchanged": true
+        }
+      ],
+      "validation_simulation": "stubbed; caller reads saved episode fitness only"
+    },
+    {
+      "actual_population": 256,
+      "compatibility_threshold_expected": 1.9409375,
+      "compatibility_threshold_generated": 1.9409375,
+      "config_pickle_node_indexer_events": [
+        {
+          "node_indexer_next_after": [
+            35
+          ],
+          "node_indexer_next_before": [
+            34
+          ],
+          "source": "TrainingReporter.save_genome:champion"
+        },
+        {
+          "node_indexer_next_after": [
+            69
+          ],
+          "node_indexer_next_before": [
+            68
+          ],
+          "source": "AtomicCheckpointer.save_checkpoint"
+        }
+      ],
+      "expected_checkpoint_generation": 2,
+      "expected_population": 256,
+      "first_divergent_genome": {
+        "anchor_fitness_equal": true,
+        "connection_keys_only_actual": [
+          "(-126, 35)",
+          "(-168, 35)",
+          "(35, 1)"
+        ],
+        "connection_keys_only_expected": [
+          "(-126, 36)",
+          "(-168, 36)",
+          "(36, 1)"
+        ],
+        "fitness_equal": true,
+        "id": 509,
+        "node_keys_only_actual": [
+          35
+        ],
+        "node_keys_only_expected": [
+          36
+        ],
+        "nodes_actual": [
+          0,
+          1,
+          35
+        ],
+        "nodes_expected": [
+          0,
+          1,
+          36
+        ]
+      },
+      "generated_checkpoint_generation": 2,
+      "genome_indexer_next": {
+        "expected": [
+          701
+        ],
+        "generated": [
+          701
+        ]
+      },
+      "innovation_tracker_equal": false,
+      "innovation_tracker_expected_counter": 1389,
+      "innovation_tracker_generated_counter": 1389,
+      "innovation_tracker_generation_key_mismatches": 104,
+      "matching_genomes": 223,
+      "mismatches_cpu_activation_equal": 33,
+      "mismatches_cpu_activation_max_abs_delta": 0.0,
+      "mismatches_graph_equal_up_to_hidden_renaming": 33,
+      "mismatching_genome_ids": [
+        509,
+        510,
+        518,
+        528,
+        531,
+        532,
+        537,
+        539,
+        540,
+        541,
+        544,
+        559,
+        566,
+        577,
+        581,
+        583,
+        587,
+        601,
+        605,
+        608,
+        610,
+        616,
+        620,
+        636,
+        637,
+        644,
+        647,
+        665,
+        670,
+        673,
+        688,
+        692,
+        697
+      ],
+      "new_species_ids": [
+        31,
+        32,
+        33,
+        34,
+        35,
+        36
+      ],
+      "node_indexer_next": {
+        "expected": [
+          69
+        ],
+        "generated": [
+          68
+        ],
+        "source": [
+          34
+        ]
+      },
+      "population_ids_match": true,
+      "python_rng_equal": true,
+      "species_equal": true,
+      "species_indexer_expected_next": [
+        37
+      ],
+      "species_indexer_generated_next": [
+        37
+      ],
+      "species_mismatch_ids": [],
+      "validation_calls": [],
+      "validation_simulation": "stubbed; caller reads saved episode fitness only"
+    },
+    {
+      "actual_population": 256,
+      "compatibility_threshold_expected": 2.0209375,
+      "compatibility_threshold_generated": 2.0209375,
+      "config_pickle_node_indexer_events": [
+        {
+          "node_indexer_next_after": [
+            70
+          ],
+          "node_indexer_next_before": [
+            69
+          ],
+          "source": "TrainingReporter.save_genome:champion"
+        },
+        {
+          "node_indexer_next_after": [
+            104
+          ],
+          "node_indexer_next_before": [
+            103
+          ],
+          "source": "AtomicCheckpointer.save_checkpoint"
+        }
+      ],
+      "expected_checkpoint_generation": 3,
+      "expected_population": 256,
+      "first_divergent_genome": {
+        "anchor_fitness_equal": true,
+        "connection_keys_only_actual": [
+          "(-2, 70)",
+          "(70, 1)"
+        ],
+        "connection_keys_only_expected": [
+          "(-2, 71)",
+          "(71, 1)"
+        ],
+        "fitness_equal": true,
+        "id": 702,
+        "node_keys_only_actual": [
+          70
+        ],
+        "node_keys_only_expected": [
+          71
+        ],
+        "nodes_actual": [
+          0,
+          1,
+          15,
+          70
+        ],
+        "nodes_expected": [
+          0,
+          1,
+          15,
+          71
+        ]
+      },
+      "generated_checkpoint_generation": 3,
+      "genome_indexer_next": {
+        "expected": [
+          888
+        ],
+        "generated": [
+          888
+        ]
+      },
+      "innovation_tracker_equal": false,
+      "innovation_tracker_expected_counter": 1535,
+      "innovation_tracker_generated_counter": 1535,
+      "innovation_tracker_generation_key_mismatches": 100,
+      "matching_genomes": 223,
+      "mismatches_cpu_activation_equal": 33,
+      "mismatches_cpu_activation_max_abs_delta": 0.0,
+      "mismatches_graph_equal_up_to_hidden_renaming": 33,
+      "mismatching_genome_ids": [
+        702,
+        705,
+        709,
+        715,
+        720,
+        724,
+        747,
+        757,
+        758,
+        769,
+        776,
+        778,
+        788,
+        792,
+        804,
+        812,
+        813,
+        819,
+        821,
+        827,
+        833,
+        836,
+        839,
+        844,
+        848,
+        854,
+        860,
+        862,
+        870,
+        873,
+        876,
+        880,
+        887
+      ],
+      "new_species_ids": [
+        37,
+        38
+      ],
+      "node_indexer_next": {
+        "expected": [
+          104
+        ],
+        "generated": [
+          103
+        ],
+        "source": [
+          69
+        ]
+      },
+      "population_ids_match": true,
+      "python_rng_equal": true,
+      "species_equal": true,
+      "species_indexer_expected_next": [
+        39
+      ],
+      "species_indexer_generated_next": [
+        39
+      ],
+      "species_mismatch_ids": [],
+      "validation_calls": [],
+      "validation_simulation": "stubbed; caller reads saved episode fitness only"
+    }
+  ],
+  "run": "C:\\Docker\\SlitherAI\\runs\\20260924-163112-852097"
+}

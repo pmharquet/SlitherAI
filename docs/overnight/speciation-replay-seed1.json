@@ -1,0 +1,286 @@
+{
+  "allocation": null,
+  "neat_python_version": "1.1.0",
+  "pythonhashseed": "1",
+  "replay": [
+    {
+      "actual_population": 256,
+      "compatibility_threshold_expected": 1.9409375,
+      "compatibility_threshold_generated": 1.9409375,
+      "config_pickle_node_indexer_events": [
+        {
+          "node_indexer_next_after": [
+            35
+          ],
+          "node_indexer_next_before": [
+            34
+          ],
+          "source": "TrainingReporter.save_genome:champion"
+        },
+        {
+          "node_indexer_next_after": [
+            69
+          ],
+          "node_indexer_next_before": [
+            68
+          ],
+          "source": "AtomicCheckpointer.save_checkpoint"
+        }
+      ],
+      "expected_checkpoint_generation": 2,
+      "expected_population": 256,
+      "first_divergent_genome": {
+        "anchor_fitness_equal": true,
+        "connection_keys_only_actual": [
+          "(-126, 35)",
+          "(-168, 35)",
+          "(35, 1)"
+        ],
+        "connection_keys_only_expected": [
+          "(-126, 36)",
+          "(-168, 36)",
+          "(36, 1)"
+        ],
+        "fitness_equal": true,
+        "id": 509,
+        "node_keys_only_actual": [
+          35
+        ],
+        "node_keys_only_expected": [
+          36
+        ],
+        "nodes_actual": [
+          0,
+          1,
+          35
+        ],
+        "nodes_expected": [
+          0,
+          1,
+          36
+        ]
+      },
+      "generated_checkpoint_generation": 2,
+      "genome_indexer_next": {
+        "expected": [
+          701
+        ],
+        "generated": [
+          701
+        ]
+      },
+      "innovation_tracker_equal": false,
+      "innovation_tracker_expected_counter": 1389,
+      "innovation_tracker_generated_counter": 1389,
+      "innovation_tracker_generation_key_mismatches": 104,
+      "matching_genomes": 223,
+      "mismatches_cpu_activation_equal": 33,
+      "mismatches_cpu_activation_max_abs_delta": 0.0,
+      "mismatches_graph_equal_up_to_hidden_renaming": 33,
+      "mismatching_genome_ids": [
+        509,
+        510,
+        518,
+        528,
+        531,
+        532,
+        537,
+        539,
+        540,
+        541,
+        544,
+        559,
+        566,
+        577,
+        581,
+        583,
+        587,
+        601,
+        605,
+        608,
+        610,
+        616,
+        620,
+        636,
+        637,
+        644,
+        647,
+        665,
+        670,
+        673,
+        688,
+        692,
+        697
+      ],
+      "new_species_ids": [
+        31,
+        32,
+        33,
+        34,
+        35,
+        36
+      ],
+      "node_indexer_next": {
+        "expected": [
+          69
+        ],
+        "generated": [
+          68
+        ],
+        "source": [
+          34
+        ]
+      },
+      "population_ids_match": true,
+      "python_rng_equal": true,
+      "species_equal": true,
+      "species_indexer_expected_next": [
+        37
+      ],
+      "species_indexer_generated_next": [
+        37
+      ],
+      "species_mismatch_ids": [],
+      "validation_calls": [],
+      "validation_simulation": "stubbed; caller reads saved episode fitness only"
+    },
+    {
+      "actual_population": 256,
+      "compatibility_threshold_expected": 2.0209375,
+      "compatibility_threshold_generated": 2.0209375,
+      "config_pickle_node_indexer_events": [
+        {
+          "node_indexer_next_after": [
+            70
+          ],
+          "node_indexer_next_before": [
+            69
+          ],
+          "source": "TrainingReporter.save_genome:champion"
+        },
+        {
+          "node_indexer_next_after": [
+            104
+          ],
+          "node_indexer_next_before": [
+            103
+          ],
+          "source": "AtomicCheckpointer.save_checkpoint"
+        }
+      ],
+      "expected_checkpoint_generation": 3,
+      "expected_population": 256,
+      "first_divergent_genome": {
+        "anchor_fitness_equal": true,
+        "connection_keys_only_actual": [
+          "(-2, 70)",
+          "(70, 1)"
+        ],
+        "connection_keys_only_expected": [
+          "(-2, 71)",
+          "(71, 1)"
+        ],
+        "fitness_equal": true,
+        "id": 702,
+        "node_keys_only_actual": [
+          70
+        ],
+        "node_keys_only_expected": [
+          71
+        ],
+        "nodes_actual": [
+          0,
+          1,
+          15,
+          70
+        ],
+        "nodes_expected": [
+          0,
+          1,
+          15,
+          71
+        ]
+      },
+      "generated_checkpoint_generation": 3,
+      "genome_indexer_next": {
+        "expected": [
+          888
+        ],
+        "generated": [
+          888
+        ]
+      },
+      "innovation_tracker_equal": false,
+      "innovation_tracker_expected_counter": 1535,
+      "innovation_tracker_generated_counter": 1535,
+      "innovation_tracker_generation_key_mismatches": 100,
+      "matching_genomes": 223,
+      "mismatches_cpu_activation_equal": 33,
+      "mismatches_cpu_activation_max_abs_delta": 0.0,
+      "mismatches_graph_equal_up_to_hidden_renaming": 33,
+      "mismatching_genome_ids": [
+        702,
+        705,
+        709,
+        715,
+        720,
+        724,
+        747,
+        757,
+        758,
+        769,
+        776,
+        778,
+        788,
+        792,
+        804,
+        812,
+        813,
+        819,
+        821,
+        827,
+        833,
+        836,
+        839,
+        844,
+        848,
+        854,
+        860,
+        862,
+        870,
+        873,
+        876,
+        880,
+        887
+      ],
+      "new_species_ids": [
+        37,
+        38
+      ],
+      "node_indexer_next": {
+        "expected": [
+          104
+        ],
+        "generated": [
+          103
+        ],
+        "source": [
+          69
+        ]
+      },
+      "population_ids_match": true,
+      "python_rng_equal": true,
+      "species_equal": true,
+      "species_indexer_expected_next": [
+        39
+      ],
+      "species_indexer_generated_next": [
+        39
+      ],
+      "species_mismatch_ids": [],
+      "validation_calls": [],
+      "validation_simulation": "stubbed; caller reads saved episode fitness only"
+    }
+  ],
+  "run": "C:\\Docker\\SlitherAI\\runs\\20260924-163112-852097"
+}

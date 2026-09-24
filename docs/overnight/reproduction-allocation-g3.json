@@ -1,0 +1,109 @@
+{
+  "allocation": {
+    "comparison": [
+      {
+        "actual_elite_ids": 74,
+        "changed_species_allocations": [
+          {
+            "delta_min2_minus_min4": -1,
+            "min2_spawn": 4,
+            "min4_spawn": 5,
+            "species_id": 1
+          },
+          {
+            "delta_min2_minus_min4": 1,
+            "min2_spawn": 6,
+            "min4_spawn": 5,
+            "species_id": 4
+          },
+          {
+            "delta_min2_minus_min4": 1,
+            "min2_spawn": 5,
+            "min4_spawn": 4,
+            "species_id": 5
+          },
+          {
+            "delta_min2_minus_min4": 1,
+            "min2_spawn": 6,
+            "min4_spawn": 5,
+            "species_id": 13
+          },
+          {
+            "delta_min2_minus_min4": -1,
+            "min2_spawn": 4,
+            "min4_spawn": 5,
+            "species_id": 19
+          },
+          {
+            "delta_min2_minus_min4": -1,
+            "min2_spawn": 4,
+            "min4_spawn": 5,
+            "species_id": 37
+          }
+        ],
+        "effective_minimum": 4,
+        "effective_species_mutant_children": 35.960013870301324,
+        "effective_species_total_spawn": 36.86325504285638,
+        "elite_copies": 74,
+        "elite_only_species": 0,
+        "largest_spawn_share": 0.04296875,
+        "min2_vs_min4_spawn_identical": false,
+        "min_species_size": 4,
+        "mutant_children": 182,
+        "pre_exact_spawn_sum": 252,
+        "spawn_distribution": {
+          "10": 3,
+          "11": 1,
+          "4": 1,
+          "5": 9,
+          "6": 10,
+          "7": 9,
+          "8": 2,
+          "9": 3
+        },
+        "spawn_sum": 256,
+        "species": 38,
+        "species_at_minimum": 1,
+        "top4_spawn": 41,
+        "top4_spawn_share": 0.16015625,
+        "top8_spawn": 76,
+        "top8_spawn_share": 0.296875
+      },
+      {
+        "actual_elite_ids": 74,
+        "effective_minimum": 2,
+        "effective_species_mutant_children": 35.82598795388286,
+        "effective_species_total_spawn": 36.80531152276071,
+        "elite_copies": 74,
+        "elite_only_species": 0,
+        "largest_spawn_share": 0.04296875,
+        "min_species_size": 2,
+        "mutant_children": 182,
+        "pre_exact_spawn_sum": 249,
+        "spawn_distribution": {
+          "10": 3,
+          "11": 1,
+          "4": 3,
+          "5": 5,
+          "6": 12,
+          "7": 9,
+          "8": 2,
+          "9": 3
+        },
+        "spawn_sum": 256,
+        "species": 38,
+        "species_at_minimum": 0,
+        "top4_spawn": 41,
+        "top4_spawn_share": 0.16015625,
+        "top8_spawn": 76,
+        "top8_spawn_share": 0.296875
+      }
+    ],
+    "generation": 3,
+    "source_checkpoint": "C:\\Docker\\SlitherAI\\runs\\20260924-163112-852097\\checkpoint-3"
+  },
+  "neat_python_version": "1.1.0",
+  "pythonhashseed": "0",
+  "replay": [],
+  "run": "C:\\Docker\\SlitherAI\\runs\\20260924-163112-852097"
+}
