@@ -126,29 +126,134 @@ _TRACE_STATE_FIELDS = (
 )
 
 
+def _freeze_trace_value(value):
+    if isinstance(value, torch.Tensor):
+        return value.detach().contiguous().cpu().clone()
+    return value
+
+
+def _field_difference(left, right):
+    """Describe exact equality and numeric distance without a tolerance."""
+    if isinstance(left, torch.Tensor) and isinstance(right, torch.Tensor):
+        a, b = left.detach().cpu(), right.detach().cpu()
+    else:
+        a, b = torch.as_tensor(left), torch.as_tensor(right)
+    if tuple(a.shape) != tuple(b.shape) or a.dtype != b.dtype:
+        return dict(exact_equal=False, left_shape=list(a.shape), right_shape=list(b.shape),
+                    left_dtype=str(a.dtype), right_dtype=str(b.dtype),
+                    different_count=None, max_abs_difference=None)
+    equal = torch.equal(a, b)
+    if not a.numel():
+        different_count, max_abs = 0, 0.
+    elif a.dtype.is_floating_point or a.dtype.is_complex:
+        different_count = int((a != b).sum().item())
+        if a.dtype.is_complex:
+            delta = (a.to(torch.complex128) - b.to(torch.complex128)).abs()
+        else:
+            delta = (a.double() - b.double()).abs()
+        finite = torch.isfinite(delta)
+        max_abs = float(delta[finite].max().item()) if finite.any() else None
+    else:
+        different_count = int((a != b).sum().item())
+        delta = (a.to(torch.int64) - b.to(torch.int64)).abs()
+        max_abs = float(delta.max().item())
+    return dict(exact_equal=equal, shape=list(a.shape), dtype=str(a.dtype),
+                different_count=different_count, max_abs_difference=max_abs)
+
+
+def _event_difference(left_values, right_values):
+    left = dict(left_values)
+    right = dict(right_values)
+    names = list(dict.fromkeys([*left, *right]))
+    fields = {}
+    for name in names:
+        if name not in left or name not in right:
+            fields[name] = dict(exact_equal=False,
+                                missing_from='left' if name not in left else 'right',
+                                different_count=None, max_abs_difference=None)
+        else:
+            fields[name] = _field_difference(left[name], right[name])
+    return fields
+
+
+def _divergence_record(group, step, fields):
+    different = [name for name, value in fields.items() if not value['exact_equal']]
+    result = dict(step=step, first_field=different[0] if different else None, fields=fields)
+    if group == 'states':
+        rng = fields.get('rng_state')
+        result['rng_state_equal'] = None if rng is None else rng['exact_equal']
+        result['non_float_state_equal'] = {
+            name: value['exact_equal'] for name, value in fields.items()
+            if value.get('dtype', value.get('left_dtype', '')).startswith(
+                ('torch.bool', 'torch.int', 'torch.uint'))
+        }
+    return result
+
+
 @contextlib.contextmanager
-def _capture_episode_trace():
-    """Hash each production observation, action, post-step state and reward."""
-    trace = dict(observations=[], actions=[], states=[], rewards=[])
+def _capture_episode_trace(references=(), retain_values=False):
+    """Hash each policy tick and optionally compare detailed values as they stream."""
+    groups = ('observations', 'actions', 'states', 'rewards')
+    trace = dict(observations=[], actions=[], states=[], rewards=[], comparisons={},
+                 snapshots={name: [] for name in groups} if retain_values else None)
     original_observe, original_step = WorldBatch.observe, WorldBatch.step
+
+    references = list(references)
+    for ref_name, ref_trace in references:
+        if ref_trace.get('snapshots') is None:
+            raise ValueError(f'Trace reference {ref_name!r} has no retained values')
+        trace['comparisons'][ref_name] = {
+            name: dict(steps_compared=0, first_divergence=None) for name in groups
+        }
+
+    def record(group, values):
+        current_digest = _tensor_digest(values)
+        trace[group].append(current_digest)
+        event_index = len(trace[group]) - 1
+        frozen = None
+        for ref_name, ref_trace in references:
+            comparison = trace['comparisons'][ref_name][group]
+            reference_events = ref_trace['snapshots'][group]
+            if event_index >= len(reference_events):
+                if comparison['first_divergence'] is None:
+                    comparison['first_divergence'] = _divergence_record(
+                        group, event_index + 1,
+                        {'__event__': dict(exact_equal=False,
+                            reason='reference_trace_ended', different_count=None,
+                            max_abs_difference=None)})
+                continue
+            comparison['steps_compared'] += 1
+            if current_digest == ref_trace[group][event_index]:
+                continue
+            if frozen is None:
+                frozen = [(name, _freeze_trace_value(value)) for name, value in values]
+            fields = _event_difference(reference_events[event_index], frozen)
+            if comparison['first_divergence'] is None and any(
+                    not field['exact_equal'] for field in fields.values()):
+                comparison['first_divergence'] = _divergence_record(
+                    group, event_index + 1, fields)
+        if retain_values:
+            if frozen is None:
+                frozen = [(name, _freeze_trace_value(value)) for name, value in values]
+            trace['snapshots'][group].append(frozen)
 
     def observe(world):
         result = original_observe(world)
-        trace['observations'].append(_tensor_digest([('observation', result)]))
+        record('observations', [('observation', result)])
         return result
 
     def step(world, actions):
-        trace['actions'].append(_tensor_digest([('actions', actions)]))
+        record('actions', [('actions', actions)])
         result = original_step(world, actions)
         state = [(name, getattr(world, name)) for name in _TRACE_STATE_FIELDS]
         state += [('arena', world.arena), ('hotspots', world.hotspots),
                   ('initial_mass', world.initial_mass), ('rng_state', world.rng.get_state()),
                   ('steps', world.steps), ('elapsed', world.elapsed),
                   ('shed_cursor', world.shed_cursor)]
-        trace['states'].append(_tensor_digest(state))
+        record('states', state)
         rewards = [('fitness', world.fitness())]
         rewards.extend((name, value) for name, value in world.fitness_terms().items())
-        trace['rewards'].append(_tensor_digest(rewards))
+        record('rewards', rewards)
         return result
 
     WorldBatch.observe, WorldBatch.step = observe, step
@@ -192,11 +297,12 @@ def sensor_candidate_profile(world):
                 nonzero=int((counts > 0).sum()))
 
 
-def _play(genome, neat_config, config, device, seed, seconds, trace=False):
+def _play(genome, neat_config, config, device, seed, seconds, trace=False,
+          trace_references=(), retain_trace_values=False):
     focal = np.arange(config.maps, dtype=np.int64) * 7 % config.worms
     genomes = [genome] * config.maps
     if trace:
-        with _capture_episode_trace() as captured:
+        with _capture_episode_trace(trace_references, retain_trace_values) as captured:
             metrics = evaluation.play_episode(
                 genomes, neat_config, config, device, seed, focal, seconds,
                 shared_random=False, policy='neat')
@@ -225,27 +331,48 @@ def _trace_parity(left, right):
         for name in fields
     }
     per_field['steps'] = len(left['observations']) == len(right['observations'])
+    first_digest_divergence = {}
+    for name in fields:
+        for step_index, (left_digest, right_digest) in enumerate(zip(left[name], right[name])):
+            if left_digest != right_digest:
+                first_digest_divergence[name] = dict(step=step_index + 1)
+                break
+        else:
+            if len(left[name]) != len(right[name]):
+                first_digest_divergence[name] = dict(
+                    step=min(len(left[name]), len(right[name])) + 1,
+                    reason='trace_length_mismatch')
     return dict(
         equal=all(per_field.values()),
         steps_left=len(left['observations']),
         steps_right=len(right['observations']),
         fields=per_field,
+        first_digest_divergence=first_digest_divergence,
         method='per-step SHA-256 of exact tensor bytes',
     )
 
 
 def run_paired_policy_episode(config, genome, neat_config, seeds=(938271, 1038282),
-                              seconds=15., device='cuda', chunks=(4, 16)):
+                              seconds=15., device='cuda', chunks=(4, 16),
+                              diagnostic_seeds=(), repeat_chunks=()):
     """Compare policy episodes; timing and traced parity runs are separate."""
-    if len(chunks) != 2 or chunks[0] == chunks[1]:
-        raise ValueError('Provide exactly two distinct sensor chunk values')
+    if len(chunks) < 2 or len(set(chunks)) != len(chunks) or any(chunk < 1 for chunk in chunks):
+        raise ValueError('Provide at least two distinct positive sensor chunk values')
     if seconds <= 0 or not seeds:
         raise ValueError('Need positive episode seconds and at least one common seed')
+    if not set(repeat_chunks).issubset(chunks):
+        raise ValueError('Repeat chunks must be included in the requested chunk list')
+    if repeat_chunks and not diagnostic_seeds:
+        raise ValueError('Same-chunk repetitions require at least one diagnostic seed')
+    if not set(diagnostic_seeds).issubset(seeds):
+        raise ValueError('Diagnostic seeds must also be included in the timing seeds')
     ordered = sorted(chunks)
-    timed, parity = [], []
-    by_seed_chunk = {}
+    diagnostic_seeds = set(int(seed) for seed in diagnostic_seeds)
+    repeat_chunks = tuple(dict.fromkeys(repeat_chunks))
+    timed, parity, repeats = [], [], []
     for seed_index, seed in enumerate(seeds):
         order = ordered if seed_index % 2 == 0 else list(reversed(ordered))
+        traces = {}
         for chunk in order:
             c = dataclasses.replace(config, sensor_chunk=chunk).validate()
             metrics, elapsed = _play(genome, neat_config, c, device, seed, seconds)
@@ -253,27 +380,55 @@ def run_paired_policy_episode(config, genome, neat_config, seeds=(938271, 103828
                        raycast_blocks=sensor_ray_block_count(c, chunk),
                        requested_sim_seconds=seconds, metrics=_metric_summary(metrics))
             timed.append(row)
-            by_seed_chunk[(int(seed), chunk)] = metrics
+        reference_chunk = ordered[0]
+        detailed = int(seed) in diagnostic_seeds
+        for chunk in ordered:
+            c = dataclasses.replace(config, sensor_chunk=chunk).validate()
+            references = ()
+            if detailed and chunk != reference_chunk:
+                references = ((f'chunk_{reference_chunk}', traces[reference_chunk][1]),)
+            retain = detailed and (chunk == reference_chunk or chunk in repeat_chunks)
+            metrics, trace = _play(
+                genome, neat_config, c, device, seed, seconds, trace=True,
+                trace_references=references, retain_trace_values=retain)
+            traces[chunk] = (metrics, trace)
+            if chunk == reference_chunk:
+                continue
+            reference_metrics, reference_trace = traces[reference_chunk]
+            trace_result = _trace_parity(reference_trace, trace)
+            trace_result['summary_metrics_equal'] = reference_metrics == metrics
+            trace_result.update(seed=int(seed), left_chunk=reference_chunk, right_chunk=chunk)
+            if detailed:
+                trace_result['numeric_diagnostics'] = trace['comparisons'][f'chunk_{reference_chunk}']
+            parity.append(trace_result)
 
-        left_chunk, right_chunk = ordered
-        c_left = dataclasses.replace(config, sensor_chunk=left_chunk).validate()
-        c_right = dataclasses.replace(config, sensor_chunk=right_chunk).validate()
-        left_metrics, left_trace = _play(genome, neat_config, c_left, device, seed, seconds, trace=True)
-        right_metrics, right_trace = _play(genome, neat_config, c_right, device, seed, seconds, trace=True)
-        trace_result = _trace_parity(left_trace, right_trace)
-        trace_result['summary_metrics_equal'] = left_metrics == right_metrics
-        trace_result.update(seed=int(seed), left_chunk=left_chunk, right_chunk=right_chunk)
-        parity.append(trace_result)
+        if detailed:
+            for chunk in repeat_chunks:
+                reference_metrics, reference_trace = traces[chunk]
+                c = dataclasses.replace(config, sensor_chunk=chunk).validate()
+                metrics, repeated_trace = _play(
+                    genome, neat_config, c, device, seed, seconds, trace=True,
+                    trace_references=((f'chunk_{chunk}_first_run', reference_trace),))
+                repeat_result = _trace_parity(reference_trace, repeated_trace)
+                repeat_result['summary_metrics_equal'] = reference_metrics == metrics
+                repeat_result['numeric_diagnostics'] = repeated_trace['comparisons'][
+                    f'chunk_{chunk}_first_run']
+                repeat_result.update(seed=int(seed), sensor_chunk=chunk,
+                                     comparison='same_chunk_reproducibility')
+                repeats.append(repeat_result)
+                reference_trace['snapshots'] = None
+            for _, trace in traces.values():
+                trace['snapshots'] = None
 
     timing_summary = {}
     for chunk in ordered:
         samples = [row['wall_ms'] for row in timed if row['sensor_chunk'] == chunk]
         timing_summary[str(chunk)] = dict(median_wall_ms=statistics.median(samples),
                                            samples=len(samples))
-    if len(ordered) == 2:
+    if 4 in ordered and 16 in ordered:
         timing_summary['ratio_chunk4_over_chunk16'] = (
             timing_summary['4']['median_wall_ms'] / timing_summary['16']['median_wall_ms']
-            if ordered == [4, 16] else None)
+        )
 
     return dict(
         mode='paired_policy_episode',
@@ -289,8 +444,12 @@ def run_paired_policy_episode(config, genome, neat_config, seeds=(938271, 103828
         parity='separate instrumented play_episode; traces are excluded from timing',
         timed_episodes=timed,
         parity_episodes=parity,
+        same_chunk_repeats=repeats,
+        diagnostic_seeds=sorted(diagnostic_seeds),
+        repeated_chunks=list(repeat_chunks),
         timing_summary=timing_summary,
-        all_parity_equal=all(row['equal'] and row['summary_metrics_equal'] for row in parity),
+        all_parity_equal=(all(row['equal'] and row['summary_metrics_equal'] for row in parity)
+                          and all(row['equal'] and row['summary_metrics_equal'] for row in repeats)),
     )
 
 
@@ -400,6 +559,10 @@ def main():
                         help='run untraced policy timings and separate per-step parity traces')
     parser.add_argument('--seconds', type=float, default=15., help='simulated duration for each paired policy episode')
     parser.add_argument('--seeds', type=int, nargs='+', default=[938271, 1038282])
+    parser.add_argument('--diagnostic-seeds', type=int, nargs='*', default=[],
+                        help='seeds to trace in detail for first divergent step/field')
+    parser.add_argument('--repeat-chunks', type=int, nargs='*', default=[],
+                        help='repeat these chunks on diagnostic seeds to test same-chunk determinism')
     parser.add_argument('--device', choices=('cpu', 'cuda'), default='cuda')
     parser.add_argument('--cuda-long-fixture', action='store_true',
                         help='compare observation parity on crowded long bodies and deaths')
@@ -422,18 +585,19 @@ def main():
         if args.body_points is not None:
             config = dataclasses.replace(config, body_points=args.body_points)
         config.validate()
-        chunks = tuple(args.chunks or (4, 16))
+        chunks = tuple(args.chunks or (4, 8, 16))
         output = dict(mode='combined_policy_and_fixture', champion=source)
         if args.paired_policy:
             policy = run_paired_policy_episode(config, genome, neat_config,
-                seeds=args.seeds, seconds=args.seconds, device=args.device, chunks=chunks)
+                seeds=args.seeds, seconds=args.seconds, device=args.device, chunks=chunks,
+                diagnostic_seeds=args.diagnostic_seeds, repeat_chunks=args.repeat_chunks)
             output['policy'] = policy
         if args.cuda_long_fixture:
             fixture_config = dataclasses.replace(
                 config, maps=min(config.maps, 16), worms=min(config.worms, 8),
                 foods=min(config.foods, 256), preys=0, body_points=max(config.body_points, 96))
             output['long_body_fixture'] = run_long_body_fixture(
-                fixture_config, seed=args.seed, chunks=(4, 16), device=args.device)
+                fixture_config, seed=args.seed, chunks=chunks, device=args.device)
         rendered = json.dumps(output, indent=2)
         out = args.out
         if out is None:
