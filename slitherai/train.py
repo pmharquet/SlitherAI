@@ -22,6 +22,25 @@ from .rewards import REWARD_VERSION
 
 class Cancelled(Exception): pass
 
+def _config_pickle_snapshot(config):
+    """Copy the config shell and node counter before pickle observes it.
+
+    neat-python 1.1.0's DefaultGenomeConfig.__getstate__ peeks at its counter by
+    calling next(node_indexer), which advances the live config. Clone both config
+    objects without copy/deepcopy so that __getstate__ runs only on the snapshot.
+    """
+    snapshot = object.__new__(type(config))
+    snapshot.__dict__ = config.__dict__.copy()
+
+    genome_config = config.genome_config
+    genome_snapshot = object.__new__(type(genome_config))
+    genome_snapshot.__dict__ = genome_config.__dict__.copy()
+    if genome_config.node_indexer is not None:
+        genome_snapshot.node_indexer = copy.copy(genome_config.node_indexer)
+    snapshot.genome_config = genome_snapshot
+    return snapshot
+
+
 class AtomicCheckpointer(neat.Checkpointer):
     """An interrupted write cannot replace a complete checkpoint."""
     def save_checkpoint(self, config, population, species_set, generation):
@@ -32,8 +51,9 @@ class AtomicCheckpointer(neat.Checkpointer):
         saved_species.__dict__ = species_set.__dict__.copy()
         saved_species.indexer = copy.copy(species_set.indexer)
         saved_species.reporters = neat.reporting.ReporterSet()
+        saved_config = _config_pickle_snapshot(config)
         with gzip.open(temporary, 'wb', compresslevel=5) as stream:
-            pickle.dump((generation, config, population, saved_species, random.getstate()), stream, protocol=pickle.HIGHEST_PROTOCOL)
+            pickle.dump((generation, saved_config, population, saved_species, random.getstate()), stream, protocol=pickle.HIGHEST_PROTOCOL)
         temporary.replace(final)
         print(f'Checkpoint: {final.name}', flush=True)
 
@@ -138,7 +158,7 @@ class Trainer:
         write_json(self.run / 'status.json', state)
 
     def save_genome(self, genome, config, name):
-        payload = dict(genome=genome, config=config, schema=VERSION, generation=self.generation)
+        payload = dict(genome=genome, config=_config_pickle_snapshot(config), schema=VERSION, generation=self.generation)
         path = self.run / f'{name}.pkl'
         tmp = path.with_suffix('.tmp')
         tmp.write_bytes(pickle.dumps(payload))
