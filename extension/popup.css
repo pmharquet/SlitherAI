@@ -1,0 +1,15 @@
+* { box-sizing: border-box; }
+body { width: 350px; margin: 0; padding: 16px; background: #171c25; color: #edf4ff; font: 13px/1.4 system-ui, sans-serif; }
+h1 { font-size: 19px; margin: 0 0 12px; }
+h2 { font-size: 14px; margin: 18px 0 6px; }
+p { margin: 7px 0; }
+.controls { display: flex; gap: 6px; flex-wrap: wrap; margin: 12px 0; }
+button { color: #fff; background: #526acb; border: 0; border-radius: 6px; padding: 7px 9px; cursor: pointer; }
+button:disabled { opacity: .45; cursor: default; }
+.legend, .note, .session { color: #aab5c5; font-size: 12px; }
+.legend span { font-size: 15px; margin-left: 5px; }
+.head { color: #ff496a; } .body { color: #ffa643; } .border { color: #bd8cff; }
+#lidar-status { color: #80e6b2; }
+#message { color: #ffb4ad; min-height: 1.4em; }
+.session { padding: 5px 0; border-top: 1px solid #364153; }
+.session button { font-size: 11px; padding: 3px 6px; margin-left: 6px; background: #3b4758; }

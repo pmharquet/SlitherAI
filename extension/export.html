@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Export SlitherAI</title>
+  <style>
+    body { max-width: 900px; margin: 32px auto; padding: 0 20px; background: #171c25; color: #edf4ff; font: 15px/1.5 system-ui, sans-serif; }
+    button { color: #fff; background: #526acb; border: 0; border-radius: 6px; padding: 10px 14px; cursor: pointer; }
+    button:disabled { opacity: .5; }
+    pre { overflow: auto; max-height: 65vh; padding: 16px; border-radius: 8px; background: #10151d; font-size: 12px; }
+    #error { color: #ffb4ad; }
+  </style>
+</head>
+<body>
+  <h1>Export d'une partie</h1>
+  <p id="summary">Chargement…</p>
+  <p>Le fichier JSONL contient une ligne de métadonnées, puis une ligne par mesure. Tous les rayons et leurs retours sont décodés en JSON. L'aperçu ci-dessous montre la première mesure, limitée à trois rayons, trois boules et deux vers pour rester lisible.</p>
+  <button id="download" disabled>Télécharger le JSONL complet</button>
+  <p id="progress" role="status"></p>
+  <p id="error" role="alert"></p>
+  <h2>Aperçu</h2>
+  <pre id="preview"></pre>
+  <script src="format.js"></script>
+  <script src="export.js"></script>
+</body>
+</html>

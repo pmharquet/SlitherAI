@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "SlitherAI Lidar",
+  "version": "0.6.0",
+  "description": "Lidar multiretours, boules, vers, score et actions humaines, sans piloter le jeu.",
+  "minimum_chrome_version": "102",
+  "permissions": ["storage", "unlimitedStorage", "activeTab"],
+  "action": { "default_popup": "popup.html" },
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["http://slither.com/io*", "https://slither.com/io*", "http://slither.io/*", "https://slither.io/*"],
+      "js": ["lidar-main.js"],
+      "world": "MAIN",
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["http://slither.com/io*", "https://slither.com/io*", "http://slither.io/*", "https://slither.io/*"],
+      "js": ["format.js", "overlay-geometry.js", "content.js"],
+      "world": "ISOLATED",
+      "run_at": "document_idle"
+    }
+  ]
+}

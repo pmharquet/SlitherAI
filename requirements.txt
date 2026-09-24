@@ -1,0 +1,6 @@
+neat-python==1.1.0
+torch>=2.8,<3
+numpy>=2,<3
+fastapi>=0.115,<1
+uvicorn>=0.30,<1
+pytest>=8,<10

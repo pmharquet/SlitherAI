@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SlitherAI Lidar</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <h1>SlitherAI Lidar</h1>
+  <p id="lidar-status" role="status">Lecture du jeu…</p>
+  <p id="nearest"></p>
+  <p id="observed"></p>
+  <p id="coverage"></p>
+  <p id="score"></p>
+  <p class="legend"><span class="head">●</span> tête ennemie <span class="body">●</span> corps ennemi <span class="border">●</span> bordure · jaune : boule · cyan : proie</p>
+  <div class="controls">
+    <button id="toggle-overlay">Masquer les rayons</button>
+    <button id="start">Enregistrer les vecteurs</button>
+    <button id="stop">Arrêter</button>
+  </div>
+  <p id="recording-status"></p>
+  <p id="message" role="alert"></p>
+  <h2>Sessions locales</h2>
+  <div id="sessions"></div>
+  <p class="note">Chaque partie peut être exportée en JSONL. Aucune image n'est produite. Les distances sont des estimations en unités du jeu.</p>
+  <script src="popup.js"></script>
+</body>
+</html>
