@@ -37,7 +37,8 @@ def convert(source, output):
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(output, inputs=np.stack(inputs), outputs=np.stack(outputs), wall_time_ms=np.array(times))
-    report = dict(samples=len(inputs), duration_seconds=(times[-1]-times[0])/1000, schema=contract(),
+    report = dict(samples=len(inputs), duration_seconds=(times[-1]-times[0])/1000,
+                  schema=contract('export-v1'), source_extension_version='0.6.0',
                   median_world_speed_per_speed_raw=float(np.median(speed_ratios)) if speed_ratios else None,
                   observed_turn_rate_p95=float(np.quantile(turns, .95)) if turns else None,
                   median_body_radius=float(np.median(radii)), mean_visible_food=float(np.mean(food_counts)),

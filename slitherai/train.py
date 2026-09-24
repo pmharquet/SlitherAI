@@ -14,13 +14,37 @@ import torch
 from .config import SimConfig
 from .io import write_json, read_json
 from .network import BatchedNetwork, load_config
-from .schema import contract, VERSION
+from .schema import contract, sensor_version_from_schema
 from .sim import WorldBatch
 from .species_metrics import SpeciesReporter
 from .evaluation import PROTOCOL, protocol_settings, scenarios, aggregate_scores, play_episode, heuristic, fixed_validation
 from .rewards import REWARD_VERSION
 
 class Cancelled(Exception): pass
+
+
+def _saved_sensor_version(run, saved_config):
+    """Resolve a run's observation semantics without guessing from bad metadata.
+
+    Runs predating ``sensor_version`` can only be migrated as legacy when their
+    settings also predate that field and no schema file was written. A present
+    schema is authoritative and must be recognized before resume rewrites any
+    run metadata.
+    """
+    schema_path = Path(run) / 'schema.json'
+    if schema_path.exists():
+        try:
+            schema = json.loads(schema_path.read_text(encoding='utf-8'))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ValueError('Saved observation schema is unreadable; refusing to overwrite it on resume') from exc
+        version = sensor_version_from_schema(schema)
+        if version is None:
+            raise ValueError('Saved observation schema is unrecognized; refusing to overwrite it on resume')
+        return version
+
+    if isinstance(saved_config, dict) and 'sensor_version' not in saved_config:
+        return 'legacy-v1'
+    raise ValueError('Resume requires schema.json when settings specify sensor_version')
 
 def _config_pickle_snapshot(config):
     """Copy the config shell and node counter before pickle observes it.
@@ -128,7 +152,8 @@ class Trainer:
                 candidates = torch.where(world.alive[arena], world.mass[arena], -torch.inf)
                 chosen = int(candidates.argmax()) if bool(world.alive[arena].any()) else int(world.mass[arena].argmax())
             slot = arena*world.c.worms+chosen
-        network = self.live_network.describe(slot, self.live_observations)
+        network = self.live_network.describe(slot, self.live_observations,
+                                             sensor_version=self.config.sensor_version)
         network.update(species_id=species_ids.get(network['genome_id']), arena=arena, worm=chosen,
                        alive=bool(world.alive[arena, chosen]), generation=self.generation,
                        observation_time=round(max(0., world.elapsed-world.c.dt), 3), captured_at=time.time())
@@ -153,17 +178,20 @@ class Trainer:
                      population=self.population_size, device=self.device,
                      gpu=torch.cuda.get_device_name(0) if self.device == 'cuda' else None,
                      elapsed_wall=round(time.perf_counter()-self.started, 1),
-                     inputs=530, outputs=2, config=dataclasses.asdict(self.config), last_metrics=self.last_metrics,
+                     inputs=530, outputs=2, sensor_version=self.config.sensor_version,
+                     schema=contract(self.config.sensor_version),
+                     config=dataclasses.asdict(self.config), last_metrics=self.last_metrics,
                      run=str(self.run), protocol=protocol_settings(), progress=self.progress, **extra)
         write_json(self.run / 'status.json', state)
 
     def save_genome(self, genome, config, name):
-        payload = dict(genome=genome, config=_config_pickle_snapshot(config), schema=VERSION, generation=self.generation)
+        payload = dict(genome=genome, config=_config_pickle_snapshot(config),
+                       schema=contract(self.config.sensor_version), generation=self.generation)
         path = self.run / f'{name}.pkl'
         tmp = path.with_suffix('.tmp')
         tmp.write_bytes(pickle.dumps(payload))
         tmp.replace(path)
-        write_json(self.run / f'{name}-network.json', dict(schema=contract(), generation=self.generation,
+        write_json(self.run / f'{name}-network.json', dict(schema=contract(self.config.sensor_version), generation=self.generation,
             nodes=[dict(id=g.key, bias=g.bias, response=g.response, activation=g.activation) for g in genome.nodes.values()],
             connections=[dict(source=g.key[0], target=g.key[1], weight=g.weight, enabled=g.enabled, innovation=g.innovation) for g in genome.connections.values()]))
 
@@ -241,13 +269,18 @@ class Trainer:
             pop = neat.Checkpointer.restore_checkpoint(str(resume))
             self.population_size = pop.config.pop_size
             settings = read_json(self.run / 'settings.json')
-            if settings and (settings['config'] != dataclasses.asdict(self.config) or settings['seed'] != self.seed):
+            if settings and (dataclasses.asdict(SimConfig.from_dict(settings['config'])) != dataclasses.asdict(self.config)
+                             or settings['seed'] != self.seed):
                 raise ValueError('Resume requires the same simulation config and seed')
+            saved_config = settings.get('config', {})
+            saved_schema_version = _saved_sensor_version(self.run, saved_config)
+            if saved_schema_version != self.config.sensor_version:
+                raise ValueError('Resume requires the same observation schema; preserve the saved sensor version')
         else:
             if (self.run / 'history.jsonl').exists(): raise ValueError('Run already exists; resume it or select a new directory')
             pop = neat.Population(load_config(population))
         self.base_generation = pop.generation
-        write_json(self.run / 'schema.json', contract())
+        write_json(self.run / 'schema.json', contract(self.config.sensor_version))
         write_json(self.run / 'settings.json', dict(config=dataclasses.asdict(self.config), seed=self.seed, population=self.population_size,
                    generations=generations, seconds=seconds, validation_every=self.validation_every, device=self.device, protocol=protocol_settings()))
         self.species_tracker = SpeciesReporter(self.run, pop)
@@ -278,11 +311,14 @@ def main():
     p.add_argument('--body-points', type=int, default=96)
     p.add_argument('--arena-radius', type=float, default=2400)
     p.add_argument('--device', choices=['auto', 'cpu', 'cuda'], default='auto')
+    p.add_argument('--sensor-version', choices=['legacy-v1', 'export-v1'], default='legacy-v1')
     p.add_argument('--seed', type=int, default=1)
     p.add_argument('--validation-every', type=int, default=5)
     p.add_argument('--resume')
     args = p.parse_args()
-    config = SimConfig(maps=args.maps, worms=args.worms, foods=args.foods, body_points=args.body_points, arena_radius=args.arena_radius)
+    config = SimConfig(maps=args.maps, worms=args.worms, foods=args.foods,
+                       body_points=args.body_points, arena_radius=args.arena_radius,
+                       sensor_version=args.sensor_version)
     trainer = Trainer(config, args.run, args.device, args.seed, args.validation_every)
     trainer.train(args.population, args.generations, args.seconds, args.resume)
 

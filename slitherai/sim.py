@@ -337,8 +337,52 @@ class WorldBatch:
         relevant = (torch.minimum(ar[..., 0], br[..., 0]) - radii <= halfw[..., None]) & (torch.maximum(ar[..., 0], br[..., 0]) + radii >= -halfw[..., None])
         relevant &= (torch.minimum(ar[..., 1], br[..., 1]) - radii <= halfh[..., None]) & (torch.maximum(ar[..., 1], br[..., 1]) + radii >= -halfh[..., None])
         relevant &= self.body_mask()[:, :, :count].reshape(m, 1, -1)
-        distance_along = torch.arange(count, device=d).repeat(w)[None, None] * self.spacing[:, owner][:, None]
-        relevant &= ~mine[None] | (distance_along >= 3 * radius[..., None])
+        if c.sensor_version == 'legacy-v1':
+            distance_along = torch.arange(count, device=d).repeat(w)[None, None] * self.spacing[:, owner][:, None]
+            relevant &= ~mine[None] | (distance_along >= 3 * radius[..., None])
+            candidate_a, candidate_b, candidate_radii = ar, br, radii
+            candidate_is_self = mine[None].expand(m, -1, -1)
+        else:
+            # The extension's `own.pts` represents body points after the head.
+            # Rebuild that channel from body[1:] while leaving enemy geometry
+            # and its radii unchanged. The local point list is regular, but the
+            # distance and 600-unit gap predicates mirror lidar-main.js.
+            enemy_relevant = relevant & ~mine[None]
+            vertices = self.body[:, :, 1:count+1]
+            vertex_rel = vertices - self.head[:, :, None]
+            vertex_valid = self.body_mask()[:, :, :count]
+            vertex_valid &= vertex_rel.square().sum(-1) >= (2 * radius[..., None]).square()
+            if count > 1:
+                edge_a = vertices[:, :, :-1]
+                edge_b = vertices[:, :, 1:]
+                edge_valid = vertex_valid[:, :, :-1] & vertex_valid[:, :, 1:]
+                edge_valid &= (edge_b - edge_a).square().sum(-1) < 600 * 600
+                edge_valid &= self.body_mask()[:, :, 1:count]
+                connected = torch.zeros_like(vertex_valid)
+                connected[:, :, :-1] |= edge_valid
+                connected[:, :, 1:] |= edge_valid
+            else:
+                edge_a = vertices[:, :, :0]
+                edge_b = vertices[:, :, :0]
+                edge_valid = vertex_valid[:, :, :0]
+                connected = torch.zeros_like(vertex_valid)
+            isolated = vertex_valid & ~connected
+            self_a = torch.cat((edge_a, vertices), dim=2)
+            self_b = torch.cat((edge_b, vertices), dim=2)
+            self_valid = torch.cat((edge_valid, isolated), dim=2)
+            self_radius = (2 * radius[..., None] + 3).expand(-1, -1, self_valid.shape[-1])
+            self_ar = self_a - self.head[:, :, None]
+            self_br = self_b - self.head[:, :, None]
+            self_relevant = (torch.minimum(self_ar[..., 0], self_br[..., 0]) - self_radius <= halfw[..., None]) & \
+                            (torch.maximum(self_ar[..., 0], self_br[..., 0]) + self_radius >= -halfw[..., None])
+            self_relevant &= (torch.minimum(self_ar[..., 1], self_br[..., 1]) - self_radius <= halfh[..., None]) & \
+                             (torch.maximum(self_ar[..., 1], self_br[..., 1]) + self_radius >= -halfh[..., None])
+            self_relevant &= self_valid
+            candidate_a = torch.cat((ar, self_ar), dim=2)
+            candidate_b = torch.cat((br, self_br), dim=2)
+            candidate_radii = torch.cat((radii, self_radius), dim=2)
+            candidate_is_self = torch.cat((torch.zeros_like(enemy_relevant), self_relevant), dim=2)
+            relevant = torch.cat((enemy_relevant, self_relevant), dim=2)
         max_candidates = int(relevant.sum(-1).max().item())
         tile_policy = _ADAPTIVE_SENSOR_TILE_POLICY.get()
         sensor_chunk = (c.sensor_chunk if tile_policy is None else
@@ -347,10 +391,10 @@ class WorldBatch:
             # Top-k includes EVERY relevant capsule because k is the maximum relevance count.
             selected = torch.topk(relevant.to(torch.uint8), max_candidates, dim=-1, sorted=False).indices
             valid = relevant.gather(-1, selected).reshape(n, max_candidates)
-            own = mine[None].expand(m, -1, -1).gather(-1, selected).reshape(n, max_candidates)
-            ga = ar.gather(2, selected[..., None].expand(-1, -1, -1, 2)).reshape(n, max_candidates, 2)
-            gb = br.gather(2, selected[..., None].expand(-1, -1, -1, 2)).reshape(n, max_candidates, 2)
-            gr = radii.gather(-1, selected).reshape(n, max_candidates)
+            own = candidate_is_self.gather(-1, selected).reshape(n, max_candidates)
+            ga = candidate_a.gather(2, selected[..., None].expand(-1, -1, -1, 2)).reshape(n, max_candidates, 2)
+            gb = candidate_b.gather(2, selected[..., None].expand(-1, -1, -1, 2)).reshape(n, max_candidates, 2)
+            gr = candidate_radii.gather(-1, selected).reshape(n, max_candidates)
             flat_dir = direction.reshape(n, r, 2)
             flat_out = observation.reshape(n, r, 6)
             flat_range = ranges.reshape(n, r)

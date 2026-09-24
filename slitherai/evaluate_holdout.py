@@ -25,7 +25,7 @@ import torch
 from .config import SimConfig
 from .evaluation import play_episode, protocol_settings
 from .rewards import REWARD_VERSION
-from .schema import VERSION, contract
+from .schema import contract, schema_id, sensor_version_from_schema
 
 
 def _canonical_hash(value: Any) -> str:
@@ -49,8 +49,9 @@ def _read_json(path: Path) -> Any:
         raise ValueError(f"Cannot read {path}: {type(exc).__name__}") from exc
 
 
-def _schema_ok(value: Any) -> bool:
-    return value == VERSION or value == contract()
+def _schema_ok(value: Any, sensor_version: str | None = None) -> bool:
+    resolved = sensor_version_from_schema(value)
+    return resolved is not None and (sensor_version is None or resolved == sensor_version)
 
 
 def _validate_genome_config(genome: Any, neat_config: Any) -> None:
@@ -108,11 +109,15 @@ def _checkpoint_champion(run: Path, generation: int) -> dict[str, Any]:
     if genome is None:
         raise ValueError(f"Champion genome {winner_id!r} is absent from {checkpoint_path}")
     _validate_genome_config(genome, neat_config)
+    settings = _read_json(run / "settings.json")
+    source_config = settings.get("config", {}) if isinstance(settings, dict) else {}
+    training_sensor_version = SimConfig.from_dict(source_config).sensor_version
     return {
         "name": f"generation-{generation}", "genome": genome, "neat_config": neat_config,
         "source": {
             "kind": "checkpoint_episode_champion", "path": str(checkpoint_path.resolve()),
             "episode_path": str(episode_path.resolve()), "generation": generation,
+            "sensor_version": training_sensor_version,
             "genome_id": winner_id, "selection_score_used_only_to_select": float(scores_array.max()),
             "checkpoint_sha256": _file_hash(checkpoint_path),
             "episode_sha256": _file_hash(episode_path), "genome_sha256": _genome_hash(genome),
@@ -128,8 +133,9 @@ def _payload_model(label: str, path: Path) -> dict[str, Any]:
         raise ValueError(f"Cannot load trusted local model payload {source_path}: {type(exc).__name__}") from exc
     if not isinstance(payload, dict) or not {"genome", "config", "schema"}.issubset(payload):
         raise ValueError(f"Model payload must contain genome, config, and schema: {source_path}")
-    if not _schema_ok(payload["schema"]):
-        raise ValueError(f"Model schema is incompatible with {VERSION}: {source_path}")
+    payload_sensor_version = sensor_version_from_schema(payload["schema"])
+    if payload_sensor_version is None:
+        raise ValueError(f"Model schema is unsupported: {source_path}")
     genome, neat_config = payload["genome"], payload["config"]
     _validate_genome_config(genome, neat_config)
     generation = payload.get("generation")
@@ -137,6 +143,7 @@ def _payload_model(label: str, path: Path) -> dict[str, Any]:
         "name": label, "genome": genome, "neat_config": neat_config,
         "source": {"kind": "trusted_model_payload", "path": str(source_path),
                    "generation": generation, "genome_id": genome.key,
+                   "sensor_version": payload_sensor_version,
                    "payload_sha256": _file_hash(source_path), "genome_sha256": _genome_hash(genome)},
     }
 
@@ -146,16 +153,20 @@ def _load_simulation_config(run: Path, comparison_path: Path | None, maps: int) 
     run_schema = _read_json(run / "schema.json")
     if not isinstance(settings, dict):
         raise ValueError("Run settings must be a JSON object")
-    if not _schema_ok(run_schema):
-        raise ValueError(f"Run observation schema is incompatible with {VERSION}")
     saved_protocol = settings.get("protocol")
     saved_config = settings.get("config")
     if not isinstance(saved_config, dict):
         raise ValueError("Run settings have no simulation config")
+    saved_sim_config = SimConfig.from_dict(saved_config)
+    run_sensor_version = sensor_version_from_schema(run_schema)
+    if run_sensor_version is None:
+        raise ValueError("Run observation schema is unsupported")
+    if run_sensor_version != saved_sim_config.sensor_version:
+        raise ValueError("Run settings and observation schema disagree about sensor_version")
     if comparison_path is None:
         if saved_protocol != protocol_settings():
             raise ValueError("Saved protocol differs; provide --comparison-config to rescore every policy under one protocol")
-        sim_config = SimConfig.from_dict(saved_config)
+        sim_config = saved_sim_config
         if sim_config.reward_version != REWARD_VERSION:
             raise ValueError("Saved reward version differs; provide --comparison-config to rescore every policy")
         config_source = "saved_run_settings"
@@ -177,7 +188,11 @@ def _load_simulation_config(run: Path, comparison_path: Path | None, maps: int) 
         "protocol": protocol_settings(), "protocol_sha256": _canonical_hash(protocol_settings()),
         "reward_version": sim_config.reward_version,
         "reward_version_sha256": _canonical_hash(sim_config.reward_version),
-        "schema_version": VERSION, "schema_sha256": _canonical_hash(contract()),
+        "schema_version": schema_id(sim_config.sensor_version),
+        "schema": contract(sim_config.sensor_version),
+        "schema_sha256": _canonical_hash(contract(sim_config.sensor_version)),
+        "sensor_version": sim_config.sensor_version,
+        "training_sensor_version": run_sensor_version,
         "all_policies_freshly_rescored": True,
     }
     return sim_config, metadata
@@ -258,6 +273,13 @@ def run_holdout(run: Path, candidate_generations: list[int], candidate_payloads:
         if not same_run and comparison_path is None:
             raise ValueError("External model payloads require --comparison-config so every policy is rescored explicitly")
         models.append(model)
+    for model in models:
+        source_version = model.get("source", {}).get("sensor_version")
+        if source_version is None:
+            # Built-in policies have no trained input schema.
+            continue
+        if comparison_path is None and source_version != sim_config.sensor_version:
+            raise ValueError("Model sensor_version differs; provide --comparison-config to freshly rescore all policies")
     labels = [model["name"] for model in models] + ["heuristic", "circle"]
     if len(labels) != len(set(labels)):
         raise ValueError("Policy labels must be unique; candidate payload labels cannot collide")
@@ -295,6 +317,7 @@ def render_markdown(result: dict[str, Any]) -> str:
              f"Run: `{result['run']}`  ",
              f"Suite: seed `{result['seed']}`, {result['maps']} maps, {result['seconds']:g}s, device `{result['device']}`  ",
              f"Config SHA-256: `{result['comparison']['config_sha256']}`  ",
+             f"Sensor version: `{result['comparison']['sensor_version']}` (run trained with `{result['comparison']['training_sensor_version']}`)  ",
              f"Protocol `{result['comparison']['protocol']['version']}` SHA-256: `{result['comparison']['protocol_sha256']}`  ",
              f"Reward `{result['comparison']['reward_version']}` SHA-256: `{result['comparison']['reward_version_sha256']}`", "",
              "All metrics below were freshly simulated. Historical episode scores were used only to identify generation champions.", "",

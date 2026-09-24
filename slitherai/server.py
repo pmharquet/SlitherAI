@@ -5,6 +5,7 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 import fastapi
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -26,6 +27,7 @@ class StartOptions(BaseModel):
     generations: int = Field(default=50, ge=1, le=10000)
     seconds: float = Field(default=90, ge=5, le=600)
     device: str = 'auto'
+    sensor_version: Literal['legacy-v1', 'export-v1'] = 'legacy-v1'
     resume: bool = False
 
 class Control(BaseModel):
@@ -97,11 +99,13 @@ def start(options: StartOptions):
         command += ['--resume', str(checkpoints[-1]), '--maps', str(cfg['maps']), '--worms', str(cfg['worms']),
                     '--foods', str(cfg['foods']), '--body-points', str(cfg['body_points']), '--arena-radius', str(cfg['arena_radius']),
                     '--population', str(settings['population']), '--seconds', str(settings['seconds']), '--seed', str(settings['seed']),
-                    '--validation-every', str(settings['validation_every'])]
+                    '--validation-every', str(settings['validation_every']),
+                    '--sensor-version', str(cfg.get('sensor_version', 'legacy-v1'))]
     else:
         run = RUNS / datetime.now().strftime('%Y%m%d-%H%M%S-%f')
         run.mkdir(parents=True)
-        command += ['--maps', str(options.maps), '--worms', str(options.worms), '--population', str(options.population), '--seconds', str(options.seconds)]
+        command += ['--maps', str(options.maps), '--worms', str(options.worms), '--population', str(options.population),
+                    '--seconds', str(options.seconds), '--sensor-version', options.sensor_version]
     current = run
     command += ['--run', str(run), '--generations', str(options.generations), '--device', options.device]
     write_json(run / 'control.json', dict(pause=False, stop=False, arena=0))

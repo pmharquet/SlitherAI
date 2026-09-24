@@ -59,7 +59,7 @@ class BatchedNetwork:
         self.previous_state = self.state
 
     @torch.inference_mode()
-    def describe(self, slot, inputs):
+    def describe(self, slot, inputs, sensor_version='legacy-v1'):
         """One actual evaluated network and its latest activations, for the live inspector.
 
         Internal links consume the PREVIOUS recurrent state; input links use current inputs.
@@ -71,7 +71,7 @@ class BatchedNetwork:
         previous = self.previous_state[slot].cpu().tolist()
         active = self.active[slot].cpu().tolist()
         expressed = {key for key, flag in zip(keys, active) if flag}
-        return dict(genome_id=genome.key, schema=contract(), input_keys=self.input_keys,
+        return dict(genome_id=genome.key, schema=contract(sensor_version), input_keys=self.input_keys,
                     inputs=inputs[slot].cpu().tolist(),
                     nodes=[dict(id=key, kind='output' if key in self.output_keys else 'hidden',
                                 label=('Boost' if key == self.output_keys[0] else 'Direction') if key in self.output_keys else f'N{key}',

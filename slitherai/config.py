@@ -22,6 +22,7 @@ class SimConfig:
     boost_cost: float = 3.
     body_spacing: float = 9.
     sensor_chunk: int = 4
+    sensor_version: str = 'legacy-v1'
     reward_version: str = 'growth-v2'
 
     @classmethod
@@ -33,6 +34,8 @@ class SimConfig:
         self.__dict__.update(state)
         if 'reward_version' not in state:
             self.reward_version = 'legacy-v1'
+        if 'sensor_version' not in state:
+            self.sensor_version = 'legacy-v1'
 
     def validate(self):
         for name in ('maps', 'worms', 'foods', 'body_points', 'substeps', 'sensor_chunk'):
@@ -46,4 +49,6 @@ class SimConfig:
             raise ValueError('Invalid arena or timestep')
         if self.reward_version not in ('legacy-v1', 'growth-v2'):
             raise ValueError('Unknown reward version')
+        if self.sensor_version not in ('legacy-v1', 'export-v1'):
+            raise ValueError('Unknown sensor version')
         return self

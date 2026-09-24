@@ -25,4 +25,8 @@ const result = compute({
   hh: 4000
 });
 const ray = result.rays.find(item => Math.round(item.relativeAngle * 180 / Math.PI) === -166);
-process.stdout.write(JSON.stringify({ status: result.status, ray }));
+process.stdout.write(JSON.stringify({
+  status: result.status,
+  ray,
+  rays: result.rays.map(item => ({ relativeAngle: item.relativeAngle, selfBodyDistance: item.selfBodyDistance }))
+}));
