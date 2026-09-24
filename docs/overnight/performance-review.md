@@ -61,6 +61,32 @@ Keep the active and default chunk at 4. For a later opt-in test only, choose amo
 
 Any prototype must process the same observers/capsules and leave both raw NEAT outputs unchanged; it may only choose the observation batch size. Require exact per-step observations, actions, rewards and simulator state on identical seeds, including chunk-boundary cases and long-body/death/crowding fixtures. Measure synchronized observation, full tick, full episode time and peak allocated bytes on representative density strata. A provisional adoption gate is bitwise equality on every fixture, no memory-cap violation, at least 10% paired median full-episode speedup overall, and no more than 5% median slowdown in any tested density stratum. Keep effective tile policy and thresholds in run provenance; do not change checkpoint compatibility or overwrite saved settings silently.
 
+## G8 isolated adaptive-tile benchmark
+
+Raw result: [adaptive-dense-budget-sweep.json](../../runs/20260924-163112-852097/analysis/adaptive-dense-budget-sweep.json), SHA-256 `FEAFA99D4F834FDC9DD88B5D4102347F6CC8B0C22B3BE2D1BA68D2A85A6E63CF`. The benchmark ran from a detached checkout at commit `439d04b7e06bae01fcc7122dc718bae5499dba97` (`C:/Docker/SlitherAI-perfbench-439d04b`) with the approved Python executable at `C:/Docker/SlitherAI/.venv/Scripts/python.exe`. Imports of `slitherai`, `sim`, `config`, `schema`, and `benchmark_observation` resolved to that detached checkout. Its focused CPU suite passed 8 tests; the CUDA-only test was skipped before the timed run.
+
+The GPU run used PyTorch 2.8.0+cu129 on an RTX 4060 Laptop GPU and the original run's saved generation 7 champion, genome 1065 (`slither-neat-530-v1`). The original `settings.json` remained at `sensor_chunk=4`. Training was paused through port 8765 from `pause=false, stop=false, arena=0`; the pause was acknowledged during generation 8, game 3/5, batch 3/4. The benchmark took 54.7 seconds including pause acknowledgement and restoration. `finally` restored `pause=false`; `stop=false` and `arena=0` were preserved. The API returned to active training at generation 8, game 3/5, batch 3/4; a follow-up read showed batch 4/4. The trainer wrapper/child PIDs 20948/8028 remained in place. No training process was stopped or restarted and no settings were edited.
+
+The paired policy run used 64 maps × 16 worms, seed 938271, and 10 simulated seconds (100 steps). All observations, actions, state and reward digests plus summary metrics matched exactly for every adaptive budget. Candidate counts ranged from 20 to 109 (p50 75, p90 101). Budget 1 fell back to chunk 4 on all 100 calls and exceeded its requested work budget on all calls, as the documented smallest-tile fallback requires. Budgets 4M, 7M and 14M all selected chunk 16 for all 100 calls; the maximum estimated work was 2,427,648 elements, so this sparse policy episode never exercised chunk 8.
+
+The single untraced full-episode sample took 6,220.4 ms at fixed chunk 4. Adaptive timings were 6,030.6 ms for budget 1, 3,165.7 ms for 4M, 3,149.7 ms for 7M and 3,157.1 ms for 14M. These one-seed, one-sample timings are a smoke measurement and do not establish a stable throughput gain.
+
+The dense fixture used 16 maps × 8 worms, with the same seeded initial state for all fixed and adaptive conditions. It had 95 active body points, 108 live and 20 dead worms, and 54–603 candidates per observer (median 210, 70 distinct values). Each condition received one warmup and five synchronized observation repeats in alternating order. The parity/profile pass ran outside timing. Every row matched the same reference observation bit-for-bit, and each fixture's initial tensors matched exactly.
+
+| Condition | Selected chunk | Median observe time | Peak allocated | Exact parity |
+|---|---:|---:|---:|---|
+| Fixed chunk 4 | 4 | 15.23 ms | 108.20 MiB | yes |
+| Fixed chunk 8 | 8 | 14.59 ms | 198.76 MiB | yes |
+| Fixed chunk 16 | 16 | 19.01 ms | 360.13 MiB | yes |
+| Adaptive budget 1 | 4 (fallback) | 14.63 ms | 108.20 MiB | yes |
+| Adaptive budget 4M | 8 | 14.71 ms | 198.76 MiB | yes |
+| Adaptive budget 7M | 16 | 20.21 ms | 360.13 MiB | yes |
+| Adaptive budget 14M | 16 | 18.54 ms | 360.13 MiB | yes |
+
+On this dense fixture, budget 4M selected chunk 8 at 3,357,504 estimated elements; 7M selected chunk 16 at 6,715,008. Chunk 16 took 6.3% longer than fixed chunk 16 at budget 7M and used 3.3× the peak allocation of chunk 4. Five repeats still leave timing noise, but this rejects a blanket chunk 16 default and confirms that these thresholds reach different tiles on dense versus sparse workloads. The adaptive policy preserved exact observations in both workloads. No checkpoint, trainer config, server code or active settings changed.
+
+Next confirmation, not run here: after generation 10 validation, compare fixed chunk 4 with budget 4M on the same saved champion for 64 maps × 16 worms × 90 simulated seconds, using seed 1038282, separate untraced timings and exact traces. Reserve a dedicated pause window capped at 240 seconds and enforce a 210-second benchmark subprocess timeout. Keep this as benchmark-only runtime context with recorded threshold provenance; any trainer integration must coordinate with the sensor-mode work and preserve the legacy chunk 4 default.
+
 ## Input and action contract
 
 The schema is consistent: 87 rays × 6 channels + 8 global values = 530 inputs, with two outputs ordered as boost probability then absolute direction in turns ([schema.py:5-11](../../slitherai/schema.py#L5)). The network returns the first two output nodes ([network.py:87-92](../../slitherai/network.py#L87)); `step()` thresholds boost at 0.5 and wraps the direction with modulo before taking the shortest angular delta ([sim.py:165-173](../../slitherai/sim.py#L165)). Thus direction values 0 and 1 denote the same heading; there is no 530/2 shape or wraparound execution mismatch.
