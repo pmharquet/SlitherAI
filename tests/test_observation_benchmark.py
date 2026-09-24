@@ -49,7 +49,7 @@ def _long_mixed_world(sensor_chunk):
 
 
 def test_sensor_chunk_preserves_long_body_and_death_observations():
-    worlds = [_long_mixed_world(chunk) for chunk in (1, 2, 4)]
+    worlds = [_long_mixed_world(chunk) for chunk in (4, 8, 16)]
     observations = [world.observe() for world in worlds]
 
     assert worlds[0].active_body_points() == worlds[1].active_body_points() == worlds[2].active_body_points() == 15
