@@ -11,12 +11,16 @@ import dataclasses
 import hashlib
 import json
 import math
+import neat
 import pickle
+import platform
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+import torch
 
 from .config import SimConfig
 from .evaluation import play_episode, protocol_settings
@@ -53,10 +57,15 @@ def _validate_genome_config(genome: Any, neat_config: Any) -> None:
     gc = neat_config.genome_config
     if gc.num_inputs != contract()["inputs"] or gc.num_outputs != len(contract()["outputs"]):
         raise ValueError("Model NEAT input/output dimensions do not match the active observation schema")
-    # Constructing the phenotype catches unsupported activation/aggregation genes
-    # before the more expensive simulation starts.
-    import neat
-    neat.nn.RecurrentNetwork.create(genome, neat_config)
+    expected_inputs = list(range(-1, -contract()["inputs"] - 1, -1))
+    expected_outputs = list(range(len(contract()["outputs"])))
+    if list(gc.input_keys) != expected_inputs or list(gc.output_keys) != expected_outputs:
+        raise ValueError("Model NEAT input/output keys do not match BatchedNetwork ordering")
+    phenotype = neat.nn.RecurrentNetwork.create(genome, neat_config)
+    for key, *_ in phenotype.node_evals:
+        gene = genome.nodes[key]
+        if gene.activation != "sigmoid" or gene.aggregation != "sum":
+            raise ValueError("BatchedNetwork requires sigmoid activation and sum aggregation on expressed nodes")
 
 
 def _genome_hash(genome: Any) -> str:
@@ -182,6 +191,17 @@ def _summary(values: list[Any]) -> dict[str, float | int | None]:
     return {"n": int(len(numbers)), "mean": float(numbers.mean()), "standard_error": se}
 
 
+def _runtime_provenance() -> dict[str, Any]:
+    source_dir = Path(__file__).resolve().parent
+    code_files = ("config.py", "evaluation.py", "evaluate_holdout.py", "network.py",
+                  "protocol.py", "rewards.py", "schema.py", "sim.py")
+    return {
+        "python_version": platform.python_version(), "python_build": sys.version,
+        "torch_version": str(torch.__version__), "neat_python_version": str(getattr(neat, "__version__", "unknown")),
+        "code_sha256": {f"slitherai/{name}": _file_hash(source_dir / name) for name in code_files},
+    }
+
+
 def _paired_delta(a: list[Any], b: list[Any], seed: int, label: str) -> dict[str, Any]:
     left, right = np.asarray(a, dtype=np.float64), np.asarray(b, dtype=np.float64)
     if left.shape != right.shape or left.ndim != 1 or not np.isfinite(left).all() or not np.isfinite(right).all():
@@ -264,6 +284,7 @@ def run_holdout(run: Path, candidate_generations: list[int], candidate_payloads:
         "maps": maps, "seconds": seconds, "worms": sim_config.worms, "focal_slots": "map_index*7 % worms",
         "opponents": "evaluation.heuristic in every non-focal slot",
         "device": device, "comparison": config_meta, "models": evaluated,
+        "runtime": _runtime_provenance(),
         "paired_comparisons": comparisons,
         "uncertainty_note": "Paired map standard errors and fixed-seed bootstrap intervals describe variation within this declared suite; they do not establish generalization to new seeds, opponents, or the source game.",
     }

@@ -8,7 +8,13 @@ import numpy as np
 import pytest
 
 from slitherai.config import SimConfig
-from slitherai.evaluate_holdout import _paired_delta, render_markdown, run_holdout
+from slitherai.evaluate_holdout import (
+    _paired_delta,
+    _runtime_provenance,
+    _validate_genome_config,
+    render_markdown,
+    run_holdout,
+)
 from slitherai.network import load_config
 from slitherai.protocol import protocol_settings
 from slitherai.schema import VERSION, contract
@@ -62,6 +68,14 @@ def test_holdout_reconstructs_generation_champion_and_replays_every_policy(tmp_p
     assert len(result["comparison"]["protocol_sha256"]) == 64
     assert len(result["comparison"]["reward_version_sha256"]) == 64
     assert result["comparison"]["all_policies_freshly_rescored"] is True
+    runtime = result["runtime"]
+    assert runtime["python_version"] and runtime["torch_version"] and runtime["neat_python_version"]
+    assert set(runtime["code_sha256"]) == {
+        "slitherai/config.py", "slitherai/evaluation.py", "slitherai/evaluate_holdout.py",
+        "slitherai/network.py", "slitherai/protocol.py", "slitherai/rewards.py",
+        "slitherai/schema.py", "slitherai/sim.py",
+    }
+    assert all(len(digest) == 64 for digest in runtime["code_sha256"].values())
     for model in result["models"]:
         for values in model["metrics"].values():
             assert len(values["per_map"]) == 2
@@ -119,3 +133,39 @@ def test_external_payload_needs_explicit_comparison_settings(tmp_path):
     assert external["source"]["kind"] == "trusted_model_payload"
     assert external["source"]["generation"] == 12
     assert len(external["source"]["payload_sha256"]) == 64
+
+
+@pytest.mark.parametrize("mutation", ["activation", "aggregation"])
+def test_preflight_rejects_phenotype_functions_not_supported_by_batched_network(mutation):
+    random.seed(68)
+    neat_config = load_config(4)
+    population = neat.Population(neat_config)
+    genome = next(iter(population.population.values()))
+    gene = genome.nodes[neat_config.genome_config.output_keys[0]]
+    if mutation == "activation":
+        gene.activation = "tanh"
+    else:
+        gene.aggregation = "max"
+    with pytest.raises(ValueError, match="BatchedNetwork requires sigmoid activation and sum aggregation"):
+        _validate_genome_config(genome, neat_config)
+
+
+@pytest.mark.parametrize("mutation", ["input", "output"])
+def test_preflight_rejects_unsupported_neat_key_ordering(mutation):
+    random.seed(94)
+    neat_config = load_config(4)
+    population = neat.Population(neat_config)
+    genome = next(iter(population.population.values()))
+    if mutation == "input":
+        neat_config.genome_config.input_keys[0] = 42
+    else:
+        neat_config.genome_config.output_keys.reverse()
+    with pytest.raises(ValueError, match="input/output keys do not match BatchedNetwork ordering"):
+        _validate_genome_config(genome, neat_config)
+
+
+def test_runtime_provenance_includes_code_and_dependency_versions():
+    runtime = _runtime_provenance()
+    assert runtime["python_version"] and runtime["python_build"]
+    assert runtime["torch_version"] and runtime["neat_python_version"]
+    assert all(len(value) == 64 for value in runtime["code_sha256"].values())

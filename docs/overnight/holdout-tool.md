@@ -65,10 +65,10 @@ An explicit comparison config lets all policies be replayed under one declared s
 }
 ```
 
-The command's `--maps` value replaces `config.maps`; all other config values are fixed by the explicit file. An observation-schema mismatch is always rejected because the current network cannot interpret a different input contract. The recorded config, protocol, reward, and schema each have SHA-256 provenance fields.
+The command's `--maps` value replaces `config.maps`; all other config values are fixed by the explicit file. An observation-schema mismatch is always rejected because the current network cannot interpret a different input contract. The recorded config, protocol, reward, and schema each have SHA-256 provenance fields. The report also hashes the active `config.py`, `evaluation.py`, `evaluate_holdout.py`, `network.py`, `protocol.py`, `rewards.py`, `schema.py`, and `sim.py`, and records Python, PyTorch, and NEAT-Python versions. Before simulation, each candidate must have the exact input/output key order expected by `BatchedNetwork`, with sigmoid activation and sum aggregation on every expressed node.
 
 ## Results and limits
 
 The tool writes a compact JSON file with per-map metrics and all paired model differences, plus a Markdown summary, under `RUN/analysis/holdout/` by default. Its paired standard errors and fixed-seed bootstrap intervals measure variation across this declared map suite. They are not evidence of performance across unseen seeds, opponent policies, or the source game. Seeded maps are the unit of resampling; the reported intervals do not account for model-selection uncertainty.
 
-This is an offline evaluator and imports no external APIs. CPU is the default; `--device cuda` opts into the configured CUDA device. Tests use a tiny synthetic CPU run and verify checkpoint champion provenance, fresh rescoring, explicit old-reward handling, and deterministic paired uncertainty. They do not run the reserved seed suite.
+This is an offline evaluator and imports no external APIs. CPU is the default; `--device cuda` opts into the configured CUDA device. Tests use a tiny synthetic CPU run and verify checkpoint champion provenance, fresh rescoring, explicit old-reward handling, unsupported phenotype rejection, runtime provenance, and deterministic paired uncertainty. They do not run the reserved seed suite.
