@@ -1,5 +1,8 @@
 import dataclasses
+import hashlib
+import json
 import os
+import pickle
 import random
 
 import neat
@@ -8,13 +11,13 @@ import torch
 
 from slitherai.benchmark_observation import (
     _capture_episode_trace, _event_difference, _fixed_actions, build_long_body_fixture,
-    run_adaptive_tile_sweep, run_long_body_fixture, run_paired_policy_episode,
+    load_run_champion, run_adaptive_tile_sweep, run_long_body_fixture, run_paired_policy_episode,
     run_tiling_trace_diagnostic,
     sensor_candidate_profile, sensor_ray_block_count,
 )
 from slitherai.config import SimConfig
 from slitherai.network import load_config
-from slitherai.schema import ANGLES
+from slitherai.schema import ANGLES, VERSION
 from slitherai.sim import (
     WorldBatch, adaptive_sensor_tiling, choose_sensor_chunk, sensor_tile_work_elements,
 )
@@ -265,6 +268,49 @@ def test_tiling_trace_diagnostic_runs_bounded_cpu_matrix():
     assert all(row['equal'] for row in result['comparisons'])
     assert result['peak_pair_snapshot_tensor_bytes'] == 0
     assert result['adaptive_tile_profile']['selected_chunk_counts']['16'] == 2
+
+
+def test_load_run_champion_selects_explicit_payload_and_validates_schema(tmp_path):
+    config = SimConfig(maps=2, worms=2, foods=16, preys=0, body_points=16)
+    (tmp_path/'settings.json').write_text(
+        json.dumps({'config': dataclasses.asdict(config)}), encoding='utf-8')
+    neat_config = load_config(4)
+    population = neat.Population(neat_config)
+    genomes = list(population.population.values())
+    default_payload = dict(genome=genomes[0], config=neat_config,
+                           schema=VERSION, generation=10)
+    selected_payload = dict(genome=genomes[1], config=neat_config,
+                            schema=VERSION, generation=9)
+    (tmp_path/'champion.pkl').write_bytes(pickle.dumps(default_payload))
+    model_path = tmp_path/'checkpoint9-genome1065.pkl'
+    model_path.write_bytes(pickle.dumps(selected_payload))
+
+    sim_config, genome, loaded_config, source = load_run_champion(tmp_path, model_path)
+
+    assert sim_config.maps == 2
+    assert genome.key == genomes[1].key
+    assert loaded_config.genome_config.input_keys == neat_config.genome_config.input_keys
+    assert source['genome_generation'] == 9
+    assert source['genome_id'] == genomes[1].key
+    assert source['genome_file'] == str(model_path.resolve())
+    assert source['genome_file_sha256'] == hashlib.sha256(model_path.read_bytes()).hexdigest()
+    settings_path = tmp_path/'settings.json'
+    assert source['settings_file_sha256'] == hashlib.sha256(settings_path.read_bytes()).hexdigest()
+    assert len(source['genome_gene_sha256']) == 64
+
+    incompatible = dict(selected_payload, schema='wrong-schema')
+    bad_path = tmp_path/'wrong-schema.pkl'
+    bad_path.write_bytes(pickle.dumps(incompatible))
+    with pytest.raises(ValueError, match='schema'):
+        load_run_champion(tmp_path, bad_path)
+
+    wrong_dimensions = load_config(4)
+    wrong_dimensions.genome_config.input_keys = wrong_dimensions.genome_config.input_keys[:-1]
+    incompatible = dict(selected_payload, config=wrong_dimensions)
+    bad_path = tmp_path/'wrong-dimensions.pkl'
+    bad_path.write_bytes(pickle.dumps(incompatible))
+    with pytest.raises(ValueError, match='530 inputs and 2 outputs'):
+        load_run_champion(tmp_path, bad_path)
 
 
 def test_cpu_long_body_death_and_crowding_fixture_is_exact_across_chunks():

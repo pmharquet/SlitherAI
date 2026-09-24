@@ -20,6 +20,7 @@ import torch
 
 from . import evaluation
 from .config import SimConfig
+from .schema import INPUTS, OUTPUTS, VERSION
 from .sim import WorldBatch, adaptive_sensor_tiling
 
 
@@ -912,17 +913,40 @@ def run_long_body_fixture(config, seed=917, chunks=(4, 16), device='cuda',
                 all_parity_equal=all(row['observation_exact_to_reference'] for row in results))
 
 
-def load_run_champion(run_dir):
+def load_run_champion(run_dir, model_payload=None):
     run = Path(run_dir)
-    with (run / 'settings.json').open(encoding='utf-8') as stream:
+    settings_path = run / 'settings.json'
+    with settings_path.open(encoding='utf-8') as stream:
         settings = json.load(stream)
-    with (run / 'champion.pkl').open('rb') as stream:
+    genome_path = Path(model_payload) if model_payload is not None else run / 'champion.pkl'
+    with genome_path.open('rb') as stream:
         payload = pickle.load(stream)
     if not isinstance(payload, dict) or 'genome' not in payload or 'config' not in payload:
-        raise ValueError(f'Expected project genome payload in {run / "champion.pkl"}')
+        raise ValueError(f'Expected project genome payload in {genome_path}')
+    if payload.get('schema') != VERSION:
+        raise ValueError(f'Genome payload schema {payload.get("schema")!r} does not match {VERSION!r}')
+    genome, neat_config = payload['genome'], payload['config']
+    genome_config = getattr(neat_config, 'genome_config', None)
+    if (genome_config is None or len(getattr(genome_config, 'input_keys', ())) != INPUTS
+            or len(getattr(genome_config, 'output_keys', ())) != len(OUTPUTS)):
+        raise ValueError(f'Genome payload must configure {INPUTS} inputs and {len(OUTPUTS)} outputs')
+    if not hasattr(genome, 'key') or not hasattr(genome, 'nodes') or not hasattr(genome, 'connections'):
+        raise ValueError(f'Genome payload in {genome_path} has an unsupported genome object')
+    gene_data = dict(
+        nodes=[dict(id=int(key), genes=dict(sorted(vars(gene).items())))
+               for key, gene in sorted(genome.nodes.items())],
+        connections=[dict(source=int(key[0]), target=int(key[1]),
+                           genes=dict(sorted(vars(gene).items())))
+                     for key, gene in sorted(genome.connections.items())])
+    gene_fingerprint = hashlib.sha256(json.dumps(
+        gene_data, sort_keys=True, separators=(',', ':'), allow_nan=False).encode('utf-8')).hexdigest()
     return SimConfig.from_dict(settings['config']).validate(), payload['genome'], payload['config'], dict(
-        run=str(run.resolve()), genome_file=str((run / 'champion.pkl').resolve()),
-        genome_generation=payload.get('generation'), genome_id=payload['genome'].key,
+        run=str(run.resolve()), settings_file=str(settings_path.resolve()),
+        settings_file_sha256=hashlib.sha256(settings_path.read_bytes()).hexdigest(),
+        genome_file=str(genome_path.resolve()),
+        genome_file_sha256=hashlib.sha256(genome_path.read_bytes()).hexdigest(),
+        genome_generation=payload.get('generation'), genome_id=genome.key,
+        genome_gene_sha256=gene_fingerprint,
         schema=payload.get('schema'),
     )
 
@@ -938,6 +962,8 @@ def main():
     parser.add_argument('--repeats', type=int, default=10)
     parser.add_argument('--chunks', type=int, nargs='+')
     parser.add_argument('--run', type=Path, help='training run containing settings.json and champion.pkl')
+    parser.add_argument('--model-payload', type=Path,
+                        help='explicit saved genome payload to use with the run settings')
     parser.add_argument('--paired-policy', action='store_true',
                         help='run untraced policy timings and separate per-step parity traces')
     parser.add_argument('--seconds', type=float, default=15., help='simulated duration for each paired policy episode')
@@ -965,7 +991,7 @@ def main():
         if run is None:
             last = json.loads((root / 'runs' / 'last-run.json').read_text(encoding='utf-8'))
             run = root / 'runs' / last['name']
-        config, genome, neat_config, source = load_run_champion(run)
+        config, genome, neat_config, source = load_run_champion(run, args.model_payload)
         if args.maps is not None:
             config = dataclasses.replace(config, maps=args.maps)
         if args.worms is not None:
