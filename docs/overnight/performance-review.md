@@ -158,6 +158,23 @@ Raw result: [policy-timing-only-G15-id2867-chunk4-8-seed1038282-60s-46de6ca.json
 
 The sidecar records `pause=false, stop=false, arena=3` before and after, acknowledged pause, and successful restoration. The same trainer pair `15144→6820` remained alive. Immediate post-restore status was training at generation 19, 1152/1280 completed episodes; a fresh read showed 1216/1280 and batch 4/4. No trainer was stopped or restarted, and no settings were modified.
 
+## G15 reverse-order timing sample
+
+A second approved timing-only run used the same frozen genome, run settings, dimensions and runtime, but a new seed (2123456) and reversed order (chunk 8 then chunk 4). It completed in 67.656 seconds. The runner was pinned to checkout `26e6ce0f44e4d835e10e7e7bb7706b8e7287f13b`, the same benchmark module hash, hashes for `sim.py`, `network.py`, `evaluation.py`, `config.py` and `schema.py`, Python launcher SHA-256 `3470f7919170d235d7e6079691462c4b217745ec67ee612e745730e46d98f238`, Python 3.12.6, and PyTorch 2.8.0+cu129/CUDA 12.9.
+
+| Seed | Run order | Chunk 4 wall time | Chunk 8 wall time | Chunk-8 speedup | Chunk-8 peak allocated |
+|---:|---|---:|---:|---:|---:|
+| 1038282 | 4 → 8 | 36,231.05 ms | 24,215.89 ms | 1.496× | 173.46 MiB |
+| 2123456 | 8 → 4 | 37,064.63 ms | 25,827.55 ms | 1.435× | 177.10 MiB |
+
+The second run's chunk-4 high-water was 170.60 MiB, versus 177.10 MiB for chunk 8; the second chunk-4 episode began with 8.13 MiB still allocated. For seed 2123456, both chunks had exactly the same final summaries: fitness 15.7485830, alive 0.703125, food gain 21.4193078, boost spent 0.0984375, kills 0.125, border deaths 0.109375, and collision deaths 0.1875. The seed-1038282 pair also had identical final summaries, though its values differ from seed 2123456.
+
+Both single samples put chunk 8 ahead, with 30.3–33.2% lower wall time. Reversing order did not remove that observed gap. These runs changed both seed and order, so the difference between their timings cannot isolate order bias. Each run had no warmup, one sample per chunk, and no action/reward/state traces; matching final summaries do not establish trajectory parity or a general speedup. Treat this as a repeatable directional signal only, not grounds to enable chunk 8 by default.
+
+Raw result: [policy-timing-only-G15-id2867-chunk8-4-seed2123456-60s-26e6ce0.json](../../runs/20260924-163112-852097/analysis/policy-timing-only-G15-id2867-chunk8-4-seed2123456-60s-26e6ce0.json), SHA-256 `24aa07274c615714238ab7cdf06a8a6e5858a14adaa079cdc043078117af7cc2`. Control and full code/runtime provenance: [policy-timing-only-G15-id2867-chunk8-4-seed2123456-60s-26e6ce0-control.json](../../runs/20260924-163112-852097/analysis/policy-timing-only-G15-id2867-chunk8-4-seed2123456-60s-26e6ce0-control.json), SHA-256 `e903fc74716892149a69ed2c0fc946149640d23ae8e5cc4b713f2e8b4efb5035`.
+
+The sidecar records `pause=false, stop=false, arena=3` before and after, acknowledged pause, and successful restoration. Trainer PIDs `15144→6820` were unchanged. It resumed at generation 20, 512/1280 episodes; a fresh status showed training at 576/1280, batch 2/4. No trainer was stopped or restarted and run settings were unchanged.
+
 ### Versioned deployment proposal (not implemented)
 
 If a later review accepts an opt-in experiment, use a separate branch such as `codex/sensor-tiling-budget-v1`. Add a versioned tiling policy to run configuration, for example `sensor_tile_policy=candidate_work_budget_v1`, `sensor_work_budget_elements=4000000`, and `sensor_tile_choices=[4,8,16]`; retain fixed `sensor_chunk=4` as the behavior for old settings that omit the policy. Expose the same values through explicit training and service CLI options. Save the effective policy, budget, choices and estimator version in `settings.json` and benchmark/training provenance. Keep `sensor_version` (legacy-v1/export-v1 observation semantics) a separate field.
