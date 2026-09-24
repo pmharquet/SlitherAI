@@ -9,6 +9,7 @@ import torch
 from slitherai.benchmark_observation import (
     _capture_episode_trace, _event_difference, _fixed_actions, build_long_body_fixture,
     run_adaptive_tile_sweep, run_long_body_fixture, run_paired_policy_episode,
+    run_tiling_trace_diagnostic,
     sensor_candidate_profile, sensor_ray_block_count,
 )
 from slitherai.config import SimConfig
@@ -114,7 +115,13 @@ def test_trace_numeric_diagnostic_reports_first_field_delta_and_rng_equality():
     assert not details['floating']['exact_equal']
     assert details['floating']['different_count'] == 1
     assert details['floating']['max_abs_difference'] == .25
+    assert details['floating']['bytewise_equal'] is False
+    signed_zero = _event_difference(
+        [('floating', torch.tensor([-0.]))], [('floating', torch.tensor([0.]))])
+    assert signed_zero['floating']['exact_equal'] is True
+    assert signed_zero['floating']['bytewise_equal'] is False
     assert details['alive']['exact_equal']
+    assert details['alive']['bytewise_equal'] is True
     assert details['rng_state']['exact_equal']
 
 
@@ -150,6 +157,114 @@ def test_trace_comparison_finds_first_state_field_and_rng_status(monkeypatch):
     assert first['fields']['head']['max_abs_difference'] == .25
     assert first['fields']['rng_state']['exact_equal'] is True
     assert first['fields']['alive']['exact_equal'] is True
+
+
+def test_trace_capture_retains_only_selected_steps_under_payload_cap():
+    config = SimConfig(maps=1, worms=2, foods=16, preys=0, body_points=16,
+                       arena_radius=1200)
+    world = WorldBatch(config, 'cpu', seed=83)
+    selected = {'observations': {2}, 'actions': {2}, 'states': {1}, 'rewards': {1}}
+
+    with _capture_episode_trace(retain_steps=selected,
+                                max_retained_snapshot_bytes=1024 * 1024) as trace:
+        for _ in range(3):
+            world.observe()
+            world.step(_fixed_actions(world))
+
+    assert len(trace['observations']) == len(trace['actions']) == 3
+    assert set(trace['snapshots']['observations']) == {2}
+    assert set(trace['snapshots']['actions']) == {2}
+    assert set(trace['snapshots']['states']) == {1}
+    assert set(trace['snapshots']['rewards']) == {1}
+    assert 0 < trace['retained_snapshot_tensor_bytes'] < 1024 * 1024
+
+    too_small_world = WorldBatch(config, 'cpu', seed=84)
+    with pytest.raises(MemoryError, match='tensor payload'):
+        with _capture_episode_trace(retain_steps={'observations': {1}},
+                                    max_retained_snapshot_bytes=1):
+            too_small_world.observe()
+
+
+def test_bounded_tiling_diagnostic_reports_numeric_deltas_and_rng(monkeypatch):
+    import slitherai.benchmark_observation as benchmark
+
+    metrics = {key: [1.] for key in (
+        'fitness', 'alive', 'food_gain', 'boost_spent', 'kills',
+        'border_death', 'collision_death')}
+
+    def fake_play(genome, neat_config, config, device, seed, seconds, trace=False,
+                  trace_references=(), retain_trace_values=False,
+                  retain_trace_steps=None, max_retained_snapshot_bytes=128 * 1024 * 1024,
+                  adaptive_work_budget_elements=None, collect_tile_stats=True,
+                  adaptive_tile_choices=(4, 8, 16)):
+        adaptive = adaptive_work_budget_elements is not None
+        traces = {name: ['same-1', 'same-2'] for name in ('observations', 'actions', 'states', 'rewards')}
+        if adaptive:
+            traces['observations'][0] = 'adaptive-observation'
+            traces['states'][0] = 'adaptive-state'
+        snapshots = None
+        retained_bytes = 0
+        if retain_trace_steps is not None:
+            snapshots = {name: {} for name in traces}
+            for group, steps in retain_trace_steps.items():
+                for step in steps:
+                    if group == 'observations':
+                        values = [('observation', torch.tensor([.25 if adaptive else 0.]))]
+                    elif group == 'states':
+                        values = [('head', torch.tensor([.5 if adaptive else 0.])),
+                                  ('alive', torch.tensor([True])),
+                                  ('rng_state', torch.tensor([4, 5], dtype=torch.uint8))]
+                    else:
+                        values = [(group, torch.tensor([0.]))]
+                    snapshots[group][step] = values
+                    retained_bytes += sum(value.numel() * value.element_size()
+                                          for _, value in values if isinstance(value, torch.Tensor))
+            assert retained_bytes <= max_retained_snapshot_bytes
+        trace_result = dict(traces, snapshots=snapshots, retained_snapshot_tensor_bytes=retained_bytes)
+        profile = ({'selected_chunk_counts': {'4': 0, '8': 0, '16': 2}}
+                   if adaptive else None)
+        return metrics, trace_result, profile
+
+    monkeypatch.setattr(benchmark, '_play', fake_play)
+    config = SimConfig(maps=1, worms=2, foods=16, preys=0, body_points=16)
+    result = run_tiling_trace_diagnostic(config, object(), object(), seed=1038282,
+                                         seconds=.2, adaptive_work_budget=4_000_000,
+                                         device='cpu')
+
+    assert [row['name'] for row in result['comparisons']] == [
+        'same_chunk_4_repeatability', 'same_chunk_16_repeatability', 'fixed4_vs_adaptive']
+    assert result['comparisons'][0]['equal'] and result['comparisons'][1]['equal']
+    adaptive = result['comparisons'][2]
+    assert not adaptive['equal']
+    assert adaptive['numeric_diagnostics']['observations']['first_field'] == 'observation'
+    assert adaptive['numeric_diagnostics']['observations']['fields']['observation']['max_abs_difference'] == .25
+    state = adaptive['numeric_diagnostics']['states']
+    assert state['first_field'] == 'head' and state['rng_state_equal'] is True
+    assert state['fields']['head']['different_count'] == 1
+    assert state['fields']['head']['max_abs_difference'] == .5
+    assert state['non_float_state_equal']['alive'] is True
+    assert result['peak_pair_snapshot_tensor_bytes'] <= result['snapshot_tensor_byte_cap']
+    assert not result['all_parity_equal']
+
+
+def test_tiling_trace_diagnostic_runs_bounded_cpu_matrix():
+    random.seed(71)
+    neat_config = load_config(4)
+    population = neat.Population(neat_config)
+    genome = next(iter(population.population.values()))
+    config = SimConfig(maps=5, worms=2, foods=32, preys=0, body_points=16,
+                       arena_radius=1200)
+
+    result = run_tiling_trace_diagnostic(
+        config, genome, neat_config, seed=71, seconds=.2,
+        adaptive_work_budget=10**9, device='cpu')
+
+    assert result['simulated_step_limit'] == 2
+    assert result['all_parity_equal']
+    assert len(result['comparisons']) == 3
+    assert all(row['equal'] for row in result['comparisons'])
+    assert result['peak_pair_snapshot_tensor_bytes'] == 0
+    assert result['adaptive_tile_profile']['selected_chunk_counts']['16'] == 2
 
 
 def test_cpu_long_body_death_and_crowding_fixture_is_exact_across_chunks():

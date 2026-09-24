@@ -140,9 +140,12 @@ def _field_difference(left, right):
         a, b = torch.as_tensor(left), torch.as_tensor(right)
     if tuple(a.shape) != tuple(b.shape) or a.dtype != b.dtype:
         return dict(exact_equal=False, left_shape=list(a.shape), right_shape=list(b.shape),
+                    bytewise_equal=False,
                     left_dtype=str(a.dtype), right_dtype=str(b.dtype),
                     different_count=None, max_abs_difference=None)
     equal = torch.equal(a, b)
+    bytewise_equal = torch.equal(a.contiguous().reshape(-1).view(torch.uint8),
+                                 b.contiguous().reshape(-1).view(torch.uint8))
     if not a.numel():
         different_count, max_abs = 0, 0.
     elif a.dtype.is_floating_point or a.dtype.is_complex:
@@ -157,7 +160,8 @@ def _field_difference(left, right):
         different_count = int((a != b).sum().item())
         delta = (a.to(torch.int64) - b.to(torch.int64)).abs()
         max_abs = float(delta.max().item())
-    return dict(exact_equal=equal, shape=list(a.shape), dtype=str(a.dtype),
+    return dict(exact_equal=equal, bytewise_equal=bytewise_equal,
+                shape=list(a.shape), dtype=str(a.dtype),
                 different_count=different_count, max_abs_difference=max_abs)
 
 
@@ -177,7 +181,8 @@ def _event_difference(left_values, right_values):
 
 
 def _divergence_record(group, step, fields):
-    different = [name for name, value in fields.items() if not value['exact_equal']]
+    different = [name for name, value in fields.items()
+                 if not value.get('bytewise_equal', value['exact_equal'])]
     result = dict(step=step, first_field=different[0] if different else None, fields=fields)
     if group == 'states':
         rng = fields.get('rng_state')
@@ -190,15 +195,33 @@ def _divergence_record(group, step, fields):
     return result
 
 
+def _trace_event_tensor_bytes(values):
+    return sum(value.numel() * value.element_size() for _, value in values
+               if isinstance(value, torch.Tensor))
+
+
 @contextlib.contextmanager
-def _capture_episode_trace(references=(), retain_values=False):
+def _capture_episode_trace(references=(), retain_values=False, retain_steps=None,
+                           max_retained_snapshot_bytes=128 * 1024 * 1024):
     """Hash each policy tick and optionally compare detailed values as they stream."""
     groups = ('observations', 'actions', 'states', 'rewards')
+    references = list(references)
+    if retain_values and retain_steps is not None:
+        raise ValueError('Choose full trace retention or selected-step retention, not both')
+    if retain_steps is not None and references:
+        raise ValueError('Selected-step retention cannot be used with streaming references')
+    selected_steps = None
+    if retain_steps is not None:
+        selected_steps = {name: set(int(step) for step in retain_steps.get(name, ()))
+                          for name in groups}
+        if any(step < 1 for steps in selected_steps.values() for step in steps):
+            raise ValueError('Selected trace steps must be one-based positive integers')
     trace = dict(observations=[], actions=[], states=[], rewards=[], comparisons={},
-                 snapshots={name: [] for name in groups} if retain_values else None)
+                 snapshots=({name: [] for name in groups} if retain_values else
+                            {name: {} for name in groups} if selected_steps is not None else None),
+                 retained_snapshot_tensor_bytes=0)
     original_observe, original_step = WorldBatch.observe, WorldBatch.step
 
-    references = list(references)
     for ref_name, ref_trace in references:
         if ref_trace.get('snapshots') is None:
             raise ValueError(f'Trace reference {ref_name!r} has no retained values')
@@ -210,6 +233,7 @@ def _capture_episode_trace(references=(), retain_values=False):
         current_digest = _tensor_digest(values)
         trace[group].append(current_digest)
         event_index = len(trace[group]) - 1
+        step_number = event_index + 1
         frozen = None
         for ref_name, ref_trace in references:
             comparison = trace['comparisons'][ref_name][group]
@@ -229,13 +253,24 @@ def _capture_episode_trace(references=(), retain_values=False):
                 frozen = [(name, _freeze_trace_value(value)) for name, value in values]
             fields = _event_difference(reference_events[event_index], frozen)
             if comparison['first_divergence'] is None and any(
-                    not field['exact_equal'] for field in fields.values()):
+                    not field.get('bytewise_equal', field['exact_equal'])
+                    for field in fields.values()):
                 comparison['first_divergence'] = _divergence_record(
                     group, event_index + 1, fields)
-        if retain_values:
+        should_retain = (retain_values or
+                         (selected_steps is not None and step_number in selected_steps[group]))
+        if should_retain:
+            event_bytes = _trace_event_tensor_bytes(values)
+            if trace['retained_snapshot_tensor_bytes'] + event_bytes > max_retained_snapshot_bytes:
+                raise MemoryError(
+                    f'Trace snapshot tensor payload would exceed {max_retained_snapshot_bytes} bytes')
             if frozen is None:
                 frozen = [(name, _freeze_trace_value(value)) for name, value in values]
-            trace['snapshots'][group].append(frozen)
+            trace['retained_snapshot_tensor_bytes'] += event_bytes
+            if retain_values:
+                trace['snapshots'][group].append(frozen)
+            else:
+                trace['snapshots'][group][step_number] = frozen
 
     def observe(world):
         result = original_observe(world)
@@ -299,6 +334,7 @@ def sensor_candidate_profile(world):
 
 def _play(genome, neat_config, config, device, seed, seconds, trace=False,
           trace_references=(), retain_trace_values=False,
+          retain_trace_steps=None, max_retained_snapshot_bytes=128 * 1024 * 1024,
           adaptive_work_budget_elements=None, collect_tile_stats=True,
           adaptive_tile_choices=(4, 8, 16)):
     focal = np.arange(config.maps, dtype=np.int64) * 7 % config.worms
@@ -310,7 +346,9 @@ def _play(genome, neat_config, config, device, seed, seconds, trace=False,
                     else contextlib.nullcontext(None))
     with tile_context as tile_policy:
         if trace:
-            with _capture_episode_trace(trace_references, retain_trace_values) as captured:
+            with _capture_episode_trace(
+                    trace_references, retain_trace_values, retain_trace_steps,
+                    max_retained_snapshot_bytes) as captured:
                 metrics = evaluation.play_episode(
                     genomes, neat_config, config, device, seed, focal, seconds,
                     shared_random=False, policy='neat')
@@ -556,6 +594,124 @@ def run_adaptive_tile_sweep(config, genome, neat_config, work_budgets,
     )
 
 
+def run_tiling_trace_diagnostic(config, genome, neat_config, seed, seconds,
+                                adaptive_work_budget, device='cuda',
+                                snapshot_tensor_byte_cap=128 * 1024 * 1024):
+    """Diagnose repeatability and adaptive-vs-fixed trace differences with bounded snapshots.
+
+    Digest-only passes cover the complete short episode. Numeric tensors are captured only
+    at the first digest-divergent event for each comparison and are released after comparing.
+    """
+    if seconds <= 0 or seconds > 15.:
+        raise ValueError('Diagnostic trace horizon must be positive and at most 15 simulated seconds')
+    if adaptive_work_budget < 1:
+        raise ValueError('Adaptive work budget must be positive')
+    if snapshot_tensor_byte_cap < 1:
+        raise ValueError('Snapshot tensor byte cap must be positive')
+
+    baseline_chunk, diagnostic_chunk = 4, 16
+    conditions = {
+        'fixed4_first': dict(chunk=baseline_chunk),
+        'fixed4_repeat': dict(chunk=baseline_chunk),
+        'fixed16_first': dict(chunk=diagnostic_chunk),
+        'fixed16_repeat': dict(chunk=diagnostic_chunk),
+        'adaptive': dict(chunk=baseline_chunk, work_budget=adaptive_work_budget),
+    }
+    traces, metric_summaries, tile_profiles = {}, {}, {}
+
+    def play(label, retain_steps=None, max_snapshot_bytes=snapshot_tensor_byte_cap):
+        condition = conditions[label]
+        c = dataclasses.replace(config, sensor_chunk=condition['chunk']).validate()
+        budget = condition.get('work_budget')
+        metrics, trace, profile = _play(
+            genome, neat_config, c, device, seed, seconds, trace=True,
+            retain_trace_steps=retain_steps,
+            max_retained_snapshot_bytes=max_snapshot_bytes,
+            adaptive_work_budget_elements=budget,
+            collect_tile_stats=(budget is not None))
+        return metrics, trace, profile
+
+    for label in conditions:
+        metrics, trace, profile = play(label)
+        traces[label] = trace
+        metric_summaries[label] = _metric_summary(metrics)
+        if profile is not None:
+            tile_profiles[label] = profile
+
+    pair_specs = (
+        ('fixed4_first', 'fixed4_repeat', 'same_chunk_4_repeatability'),
+        ('fixed16_first', 'fixed16_repeat', 'same_chunk_16_repeatability'),
+        ('fixed4_first', 'adaptive', 'fixed4_vs_adaptive'),
+    )
+    comparisons = []
+    peak_snapshot_payload = 0
+    for left_label, right_label, comparison_name in pair_specs:
+        left_trace, right_trace = traces[left_label], traces[right_label]
+        comparison = _trace_parity(left_trace, right_trace)
+        comparison.update(
+            name=comparison_name, seed=int(seed), seconds=seconds,
+            left=left_label, right=right_label,
+            summary_metrics_equal=(metric_summaries[left_label] == metric_summaries[right_label]))
+        target_steps = {
+            group: int(detail['step'])
+            for group, detail in comparison['first_digest_divergence'].items()
+            if isinstance(detail.get('step'), int)
+            and 1 <= detail['step'] <= min(comparison['steps_left'], comparison['steps_right'])
+        }
+        numeric = {}
+        retained_pair_bytes = 0
+        if target_steps:
+            selected_steps = {group: {step} for group, step in target_steps.items()}
+            _, left_detail, _ = play(left_label, retain_steps=selected_steps)
+            left_bytes = left_detail['retained_snapshot_tensor_bytes']
+            remaining_cap = snapshot_tensor_byte_cap - left_bytes
+            if remaining_cap < 1:
+                raise MemoryError('Reference snapshots exhausted the diagnostic tensor byte cap')
+            _, right_detail, _ = play(right_label, retain_steps=selected_steps,
+                                      max_snapshot_bytes=remaining_cap)
+            right_bytes = right_detail['retained_snapshot_tensor_bytes']
+            retained_pair_bytes = left_bytes + right_bytes
+            peak_snapshot_payload = max(peak_snapshot_payload, retained_pair_bytes)
+            for group, step in target_steps.items():
+                left_event = left_detail['snapshots'][group].get(step)
+                right_event = right_detail['snapshots'][group].get(step)
+                if left_event is None or right_event is None:
+                    numeric[group] = dict(step=step, first_field=None,
+                                          replay_snapshot_missing=True)
+                    continue
+                fields = _event_difference(left_event, right_event)
+                item = _divergence_record(group, step, fields)
+                item.update(
+                    left_replay_digest_matches_first_pass=(
+                        left_detail[group][step - 1] == left_trace[group][step - 1]),
+                    right_replay_digest_matches_first_pass=(
+                        right_detail[group][step - 1] == right_trace[group][step - 1]))
+                numeric[group] = item
+            # Do not retain event tensors across comparisons.
+            del left_detail, right_detail
+        comparison['numeric_diagnostics'] = numeric
+        comparison['retained_snapshot_tensor_bytes_for_pair'] = retained_pair_bytes
+        comparisons.append(comparison)
+
+    return dict(
+        mode='bounded_tiling_trace_diagnostic',
+        device=str(device), torch_version=torch.__version__,
+        maps=config.maps, worms=config.worms, body_points=config.body_points,
+        seed=int(seed), seconds=seconds,
+        simulated_step_limit=math.ceil(seconds / config.dt),
+        conditions={label: dict(sensor_chunk=condition['chunk'],
+                                adaptive_work_budget=condition.get('work_budget'))
+                    for label, condition in conditions.items()},
+        adaptive_tile_profile=tile_profiles.get('adaptive'),
+        snapshot_policy='digest-only full horizon; numeric tensor snapshots only at each pair first-difference step',
+        snapshot_tensor_byte_cap=snapshot_tensor_byte_cap,
+        peak_pair_snapshot_tensor_bytes=peak_snapshot_payload,
+        comparisons=comparisons,
+        all_parity_equal=all(row['equal'] and row['summary_metrics_equal']
+                             for row in comparisons),
+    )
+
+
 def build_long_body_fixture(config, device='cpu', seed=917):
     """Dense, long-body maps with deaths and deliberately varied sight lines."""
     world = WorldBatch(config, device=device, seed=seed)
@@ -792,6 +948,8 @@ def main():
                         help='repeat these chunks on diagnostic seeds to test same-chunk determinism')
     parser.add_argument('--adaptive-work-budgets', type=int, nargs='+',
                         help='opt-in sweep of candidate-work budgets; does not change saved settings')
+    parser.add_argument('--diagnose-tiling-budget', type=int,
+                        help='bounded first-divergence diagnostics for chunk 4/16 repeats and this adaptive budget')
     parser.add_argument('--fixture-repeats', type=int, default=5,
                         help='synchronized observation timing repeats for the long-body fixture')
     parser.add_argument('--device', choices=('cpu', 'cuda'), default='cuda')
@@ -800,7 +958,8 @@ def main():
     parser.add_argument('--out', type=Path, help='optional JSON result path; defaults to run/analysis for policy jobs')
     args = parser.parse_args()
     torch.set_num_threads(1)
-    if args.paired_policy or args.cuda_long_fixture or args.adaptive_work_budgets:
+    if (args.paired_policy or args.cuda_long_fixture or args.adaptive_work_budgets
+            or args.diagnose_tiling_budget is not None):
         root = Path(__file__).resolve().parents[1]
         run = args.run
         if run is None:
@@ -827,6 +986,12 @@ def main():
             output['adaptive_tile_sweep'] = run_adaptive_tile_sweep(
                 config, genome, neat_config, work_budgets=args.adaptive_work_budgets,
                 seeds=args.seeds, seconds=args.seconds, device=args.device)
+        if args.diagnose_tiling_budget is not None:
+            if len(args.seeds) != 1:
+                raise ValueError('--diagnose-tiling-budget requires exactly one --seeds value')
+            output['tiling_trace_diagnostic'] = run_tiling_trace_diagnostic(
+                config, genome, neat_config, seed=args.seeds[0], seconds=args.seconds,
+                adaptive_work_budget=args.diagnose_tiling_budget, device=args.device)
         if args.cuda_long_fixture:
             fixture_config = dataclasses.replace(
                 config, maps=min(config.maps, 16), worms=min(config.worms, 8),
