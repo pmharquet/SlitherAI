@@ -20,6 +20,21 @@ The benchmark helper is [benchmark_observation.py](../../slitherai/benchmark_obs
 
 An added CPU parity case uses long bodies, different map layouts, food locations, and two dead worms; chunk sizes 1, 2 and 4 produce bitwise equal observations ([test_observation_benchmark.py](../../tests/test_observation_benchmark.py)). This covers more body and culling states for correctness, but says nothing about CUDA performance in late-game conditions.
 
+## Paired policy experiment for the next approved window
+
+The helper now supports a paired episode run against the run's saved `champion.pkl` and `settings.json`. It uses the champion in each map, the production `evaluation.play_episode()` loop and fixed `evaluation.heuristic` opponents, the validation focal-seat pattern `map_index * 7 % worms`, independent maps within each episode, and the same seeds for chunk 4 and chunk 16. It runs uninstrumented episodes for timing, then separate traced episodes that compare per-step observation, action, reward and world-state SHA-256 digests plus final metrics. Trace copies and digest work are excluded from the timing rows. The JSON records these as separate `timed_episodes` and `parity_episodes`; it writes to `runs/<run>/analysis/` by default. The helper changes `sensor_chunk` only on an in-memory copy of the config and does not rewrite the run settings.
+
+The CPU paired episode fixture uses 5 maps × 2 worms so chunk 4 handles two raycast blocks while chunk 16 handles one. The long-body CPU fixture uses 5 × 8, also exercising two versus one block; the CUDA fixture uses 16 × 8, exercising four versus one. Focused checks pass (3 passed; CUDA fixture skipped unless explicitly enabled). A CPU smoke run with the current champion (generation 3, genome 837), seed 71, and three policy steps matched per-step observation/action/reward/state digests and final metrics across chunks 4 and 16. It is a parity check, not throughput evidence.
+
+```powershell
+.\.venv\Scripts\python.exe -m slitherai.benchmark_observation --paired-policy --cuda-long-fixture --run runs/20260924-163112-852097 --seconds 15 --seeds 938271 1038282 --chunks 4 16 --device cuda
+```
+
+
+The CUDA fixture uses 16 maps with 8 worms, 96 body points, long bodies, mixed dead/alive worms, two clustered and two spread layouts repeated four times each. It checks bitwise observation parity and reports active points, alive/dead counts, per-observer capsule-candidate count distribution, time and peak allocation. The fixture has a CPU version in the focused tests; the CUDA test is opt-in through `SLITHERAI_RUN_CUDA_FIXTURE=1`. No paired-policy or long-body CUDA result has been collected yet; run this only in an approved pause window or after the G5 boundary, then compare full-episode wall times and per-step parity separately.
+
+The timing report is an execution comparison, not a fitness baseline: it reports per-episode wall time, per-map score summaries and whether the two simulator variants stayed bitwise aligned. `sensor_chunk` currently participates in the saved `SimConfig` equality check during resume ([train.py:224-225](../../slitherai/train.py#L224)). Any production runtime override should record the effective chunk alongside the original saved setting and checkpoint, and should not alter `settings.json` in place. The offline helper already keeps its override separate; training, server and config code remain unchanged.
+
 ## Hot path and follow-up
 
 `active_body_points()` reduces a CUDA tensor and converts the result to a Python integer ([sim.py:99-102](../../slitherai/sim.py#L99)). It is called from `_collisions()` once in each of the three physics substeps ([sim.py:117-120](../../slitherai/sim.py#L117)) and once again in `observe()` ([sim.py:232-235](../../slitherai/sim.py#L232)). Sensing also transfers `relevant.sum(-1).max()` to the host through `.item()` to size `topk` ([sim.py:245-253](../../slitherai/sim.py#L245)). These data-dependent extents likely impose about five host/device synchronization points per policy tick on CUDA. They are another exactness-preserving optimization target, but need their own benchmark because avoiding the transfers may process more masked capsules.
