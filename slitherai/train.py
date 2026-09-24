@@ -19,6 +19,7 @@ from .sim import WorldBatch
 from .species_metrics import SpeciesReporter
 from .evaluation import PROTOCOL, protocol_settings, scenarios, aggregate_scores, play_episode, heuristic, fixed_validation
 from .rewards import REWARD_VERSION
+from .warmstart import initialize_from_checkpoint
 
 class Cancelled(Exception): pass
 
@@ -254,9 +255,12 @@ class Trainer:
                         score=scores.tolist(), anchor_score=anchors.tolist(),
                         metrics={key:value.tolist() for key,value in values.items()}))
 
-    def train(self, population=256, generations=50, seconds=90., resume=None):
+    def train(self, population=256, generations=50, seconds=90., resume=None,
+              initialize_from=None, sensor_version_explicit=False):
         if population < 4 or generations < 1 or seconds <= 0:
             raise ValueError('Invalid training limits')
+        if resume and initialize_from:
+            raise ValueError('--resume and --initialize-from are mutually exclusive')
         self.population_size, self.generations, self.episode_seconds = population, generations, seconds
         random.seed(self.seed)
         np.random.seed(self.seed)
@@ -276,13 +280,32 @@ class Trainer:
             saved_schema_version = _saved_sensor_version(self.run, saved_config)
             if saved_schema_version != self.config.sensor_version:
                 raise ValueError('Resume requires the same observation schema; preserve the saved sensor version')
+        elif initialize_from:
+            if any(self.run.iterdir()):
+                raise ValueError('Warm-start destination must be a new empty run directory')
+            pop, initialization = initialize_from_checkpoint(
+                initialize_from, self.config, self.run,
+                sensor_version_explicit=sensor_version_explicit)
+            if not sensor_version_explicit and self.config.sensor_version != initialization['destination_sensor_version']:
+                self.config = dataclasses.replace(
+                    self.config, sensor_version=initialization['destination_sensor_version']).validate()
+            if population != len(pop.population):
+                raise ValueError('Warm-start preserves the source population size; set --population to '
+                                 f'{len(pop.population)}')
+            self.population_size = len(pop.population)
         else:
             if (self.run / 'history.jsonl').exists(): raise ValueError('Run already exists; resume it or select a new directory')
             pop = neat.Population(load_config(population))
         self.base_generation = pop.generation
         write_json(self.run / 'schema.json', contract(self.config.sensor_version))
-        write_json(self.run / 'settings.json', dict(config=dataclasses.asdict(self.config), seed=self.seed, population=self.population_size,
-                   generations=generations, seconds=seconds, validation_every=self.validation_every, device=self.device, protocol=protocol_settings()))
+        settings = dict(config=dataclasses.asdict(self.config), seed=self.seed, population=self.population_size,
+                        generations=generations, seconds=seconds, validation_every=self.validation_every,
+                        device=self.device, protocol=protocol_settings())
+        if initialize_from:
+            initialization['destination_sensor_version'] = self.config.sensor_version
+            write_json(self.run / 'initialization.json', initialization)
+            settings['initialization'] = initialization
+        write_json(self.run / 'settings.json', settings)
         self.species_tracker = SpeciesReporter(self.run, pop)
         pop.add_reporter(self.species_tracker)
         pop.add_reporter(TrainingReporter(self))
@@ -311,15 +334,19 @@ def main():
     p.add_argument('--body-points', type=int, default=96)
     p.add_argument('--arena-radius', type=float, default=2400)
     p.add_argument('--device', choices=['auto', 'cpu', 'cuda'], default='auto')
-    p.add_argument('--sensor-version', choices=['legacy-v1', 'export-v1'], default='legacy-v1')
+    p.add_argument('--sensor-version', choices=['legacy-v1', 'export-v1'])
     p.add_argument('--seed', type=int, default=1)
     p.add_argument('--validation-every', type=int, default=5)
-    p.add_argument('--resume')
+    start_from = p.add_mutually_exclusive_group()
+    start_from.add_argument('--resume')
+    start_from.add_argument('--initialize-from', help='trusted local checkpoint-N; starts a new run and resets fitness/species history')
     args = p.parse_args()
     config = SimConfig(maps=args.maps, worms=args.worms, foods=args.foods,
                        body_points=args.body_points, arena_radius=args.arena_radius,
-                       sensor_version=args.sensor_version)
+                       sensor_version=args.sensor_version or 'legacy-v1')
     trainer = Trainer(config, args.run, args.device, args.seed, args.validation_every)
-    trainer.train(args.population, args.generations, args.seconds, args.resume)
+    trainer.train(args.population, args.generations, args.seconds, args.resume,
+                  initialize_from=args.initialize_from,
+                  sensor_version_explicit=args.sensor_version is not None)
 
 if __name__ == '__main__': main()

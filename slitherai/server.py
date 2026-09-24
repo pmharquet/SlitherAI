@@ -27,7 +27,7 @@ class StartOptions(BaseModel):
     generations: int = Field(default=50, ge=1, le=10000)
     seconds: float = Field(default=90, ge=5, le=600)
     device: str = 'auto'
-    sensor_version: Literal['legacy-v1', 'export-v1'] = 'legacy-v1'
+    sensor_version: Literal['legacy-v1', 'export-v1'] | None = None
     resume: bool = False
 
 class Control(BaseModel):
@@ -96,16 +96,19 @@ def start(options: StartOptions):
         if settings.get('protocol') != protocol_settings():
             raise fastapi.HTTPException(400, 'Cette ancienne session utilise un autre barème. Démarrez une nouvelle session ; les anciennes sauvegardes restent conservées.')
         cfg = settings['config']
+        saved_sensor_version = cfg.get('sensor_version', 'legacy-v1')
+        if options.sensor_version is not None and options.sensor_version != saved_sensor_version:
+            raise fastapi.HTTPException(400, 'Le mode capteur demandé diffère de la sauvegarde. Reprenez son mode ou démarrez une nouvelle session.')
         command += ['--resume', str(checkpoints[-1]), '--maps', str(cfg['maps']), '--worms', str(cfg['worms']),
                     '--foods', str(cfg['foods']), '--body-points', str(cfg['body_points']), '--arena-radius', str(cfg['arena_radius']),
                     '--population', str(settings['population']), '--seconds', str(settings['seconds']), '--seed', str(settings['seed']),
                     '--validation-every', str(settings['validation_every']),
-                    '--sensor-version', str(cfg.get('sensor_version', 'legacy-v1'))]
+                    '--sensor-version', str(saved_sensor_version)]
     else:
         run = RUNS / datetime.now().strftime('%Y%m%d-%H%M%S-%f')
         run.mkdir(parents=True)
         command += ['--maps', str(options.maps), '--worms', str(options.worms), '--population', str(options.population),
-                    '--seconds', str(options.seconds), '--sensor-version', options.sensor_version]
+                    '--seconds', str(options.seconds), '--sensor-version', options.sensor_version or 'legacy-v1']
     current = run
     command += ['--run', str(run), '--generations', str(options.generations), '--device', options.device]
     write_json(run / 'control.json', dict(pause=False, stop=False, arena=0))

@@ -16,14 +16,14 @@ Le GPU détecté pendant la préparation est une NVIDIA RTX 4060 Laptop de 8 Go,
 
 ## Entrées et actions
 
-Contrat `slither-neat-530-v1`, défini dans `slitherai/schema.py` et sauvegardé avec chaque session :
+Contrat de **530 entrées** défini dans `slitherai/schema.py` et sauvegardé avec chaque session. Deux identités précisent la sémantique du corps propre : `slither-neat-530-v1` (`legacy-v1`) est le défaut historique du simulateur ; `slither-neat-530-export-v1` (`export-v1`) reproduit la géométrie propre observée dans l'extension 0.6.0. Le compte, l'ordre des entrées, les rayons, les variables globales et les actions restent les mêmes.
 
 - 87 rayons : 45 dans la zone ±45° au pas de 2°, 22 jusqu'à ±90° au pas de 4°, 20 jusqu'à ±170° au pas de 8°. Cône mort derrière.
 - Six valeurs par rayon : portée visible, proximité tête ennemie, corps ennemi, corps propre, bordure et intérêt de nourriture. Les proies sont regroupées avec la nourriture.
 - Huit valeurs globales : vitesse brute normalisée, rayon du corps, longueur en segments, sinus/cosinus du cap absolu, sinus/cosinus de l'écart entre cap demandé et actuel, boost de l'action précédente.
 - Total : **87 × 6 + 8 = 530**. Les deux valeurs ajoutées à la proposition de 528 entrées indiquent l'orientation absolue, indispensable pour relier des rayons orientés selon le ver à une sortie de direction absolue.
 
-L'absence d'un objet donne 0 ; sa proximité vaut `1 / (1 + distance / 100)`. L'intérêt d'une boule vaut `min(taille / 20, 1) × proximité`, en conservant le maximum du rayon. La portée est normalisée par `portée / (portée + 1000)` ; elle évite de confondre un écran court avec un espace observé très loin. Les rayons de nourriture utilisent les mêmes projections angulaires que l'extension. Les distances et rayons physiques sont des estimations.
+En `legacy-v1`, le corps propre utilise le rayon physique et le filtre historique basé sur la longueur le long du corps (`3 × rayon`). En `export-v1`, le simulateur utilise les points à au moins `2 × rayon` spatialement de la tête, des capsules de rayon `2 × rayon + 3`, et ne relie pas deux points séparés de 600 unités ou plus. L'absence d'un objet donne 0 ; sa proximité vaut `1 / (1 + distance / 100)`. L'intérêt d'une boule vaut `min(taille / 20, 1) × proximité`, en conservant le maximum du rayon. La portée est normalisée par `portée / (portée + 1000)` ; elle évite de confondre un écran court avec un espace observé très loin. Les rayons de nourriture utilisent les mêmes projections angulaires que l'extension. Les distances et rayons physiques restent des estimations. `export-v1` est opt-in et sa parité synthétique JavaScript/Python ne calibre pas encore rayon, points de corps ou vue dans une vraie partie.
 
 Les deux sorties sont `[boost, direction]` : boost activé à partir de 0,5 ; direction de 0 à 1 sur un tour complet, avec **0 = droite, 0,25 = bas, 0,5 = gauche, 0,75 = haut**. 1 et 0 indiquent la même direction.
 
@@ -33,7 +33,7 @@ Les réseaux commencent sans neurone caché avec environ 10 % des connexions dir
 
 La simulation inclut mouvement continu, vitesse de rotation limitée, corps suivant une trajectoire, croissance, ralentissement du virage avec la taille, boost consommant de la masse et déposant des boules, collisions avec les autres vers et la bordure, nourriture issue des morts, nourriture dispersée et concentrée par endroits, et petites proies mobiles. Le corps propre n'est pas mortel. Le lidar conserve néanmoins cette information géométrique.
 
-Les corps sont des polylignes rééchantillonnées à distance régulière. Les collisions utilisent leurs capsules ; tous les segments visibles retenus par le rectangle de vue contribuent au lidar, sans plafond de voisins. Le nombre de points physiques est fixé à 96 par ver ; l'espacement augmente pour les très grands vers. Les masses lâchées à la mort représentent 70 % de la masse du ver. Les dépôts de boost utilisent un réservoir circulaire fini ; les plus anciens finissent par être remplacés.
+Les corps sont des polylignes rééchantillonnées à distance régulière. Les collisions utilisent leurs capsules ; tous les segments visibles retenus par le rectangle de vue contribuent au lidar, sans plafond de voisins. Le nombre de points physiques est fixé à 96 par ver ; l'espacement augmente pour les très grands vers. Le canal de corps propre suit le `sensor_version` enregistré au run : le défaut reste `legacy-v1`; `export-v1` n'est pas activé sur les sessions existantes. Les masses lâchées à la mort représentent 70 % de la masse du ver. Les dépôts de boost utilisent un réservoir circulaire fini ; les plus anciens finissent par être remplacés.
 
 Il s'agit d'une **approximation locale**, pas d'une copie vérifiée du moteur propriétaire. Le rayon d'arène par défaut est réduit à 2 400 unités, avec ±20 % de variation, pour provoquer des rencontres avec 16 vers. Les exports observaient une estimation de rayon autour de 31 899 unités dans le jeu ; un rayon de cet ordre est configurable avec `--arena-radius 31899`, mais demande de revoir la densité de nourriture et de joueurs. La conversion de vitesse (`speedRaw × 20`), l'accélération immédiate, le rayon de collision, la masse, la croissance, le zoom et la rotation demandent encore un étalonnage. Les délais réseau et comportements du serveur officiel ne sont pas simulés.
 
@@ -80,6 +80,7 @@ Le cinquième scénario change entre générations : une baisse ponctuelle du sc
 Chaque session est stockée sous `runs/<date-heure>/` :
 
 - `checkpoint-N` : population, espèces, configuration, innovations et générateur aléatoire ; N est la prochaine génération à évaluer. Écriture temporaire puis remplacement pour résister à une coupure pendant la sauvegarde.
+- `initialization.json` (runs initialisés depuis un checkpoint) : provenance du checkpoint source et règles de remise à zéro. La population et ses gènes sont importés, les fitness/ancrages/comportements sont effacés, et les espèces sont recréées en génération zéro. L'historique, les épisodes, les baselines et la validation du run source ne sont pas copiés.
 - `champion.pkl` : meilleur réseau de la dernière génération évaluée ; `champion-network.json` expose sa topologie.
 - `best-validation.pkl` : meilleur réseau sur l'épreuve fixe, avec son résultat dans `best-validation.json`.
 - `episodes/generation-NNNN.json` : résultats individuels des cinq parties de chaque génome, scénarios, scores fixes et scores de sélection.
@@ -87,6 +88,8 @@ Chaque session est stockée sous `runs/<date-heure>/` :
 - `history.jsonl`, `settings.json`, `schema.json`, `status.json` et `console.log` : métriques, paramètres et diagnostic.
 
 Après arrêt ou extinction du PC, ouvrir l'interface et cliquer sur **Reprendre**. Une génération incomplète est recommencée. Les paramètres de simulation sauvegardés sont réutilisés ; « Générations » indique le nombre de générations supplémentaires à exécuter. Les fichiers pickle sont des sauvegardes Python locales : le chargeur n'est prévu que pour les sauvegardes créées par ce projet.
+
+`--initialize-from checkpoint-N` démarre une nouvelle session depuis toute la population vivante d'un checkpoint local. Ce n'est pas une reprise : `--resume` et `--initialize-from` sont exclusifs. Le run de destination doit être vide, la population conserve son effectif, les paramètres physiques et la récompense doivent correspondre ; seuls le nombre de cartes, la taille de lot du capteur et le mode capteur peuvent différer. Sans `--sensor-version`, le nouveau run hérite du mode source. Un changement de mode doit être indiqué explicitement. Le compteur d'innovation global, l'indexeur de neurones et l'état aléatoire Python du checkpoint sont conservés ; le cache de déduplication des innovations de la génération est vidé, et la spéciation est recalibrée sur la population importée. Les scores précédents ne sont jamais reportés.
 
 Les versions de récompense et de protocole sont enregistrées dans `settings.json`. Les anciennes sessions sont conservées mais ne peuvent pas être reprises avec l'objectif v2 : leurs scores et compteurs de stagnation ne sont pas comparables. Leurs configurations restent lisibles pour l'analyse avec la récompense historique `legacy-v1` et `configs/neat-legacy.ini`.
 
@@ -96,13 +99,19 @@ En ligne de commande :
 .\.venv\Scripts\python.exe -m slitherai.train --run runs/experience --maps 64 --worms 16 --population 256 --generations 50 --seconds 90 --device cuda
 ```
 
+Pour un nouveau run explicitement aligné sur la géométrie propre exportée, en important une population précédente :
+
+```powershell
+.\.venv\Scripts\python.exe -m slitherai.train --run runs/warmstart-export --initialize-from runs/experience/checkpoint-72 --maps 64 --worms 16 --population 256 --generations 50 --seconds 90 --device cuda --sensor-version export-v1
+```
+
 ## Exploiter les enregistrements humains
 
 ```powershell
 .\.venv\Scripts\python.exe -m slitherai.dataset "C:\chemin\partie.jsonl" --out runs/partie.npz
 ```
 
-Le convertisseur produit les 530 entrées et les deux sorties selon le même contrat, ainsi qu'un rapport de vitesse observée et de rotation. Il accepte le lidar à 87 rayons de l'extension 0.6.0. Les exemples humains servent ici au contrôle des entrées et à l'étalonnage ; NEAT apprend en jouant dans le simulateur. Le convertisseur n'entraîne aucun réseau.
+Le convertisseur produit les 530 entrées et les deux sorties sous le contrat `export-v1`, ainsi qu'un rapport de vitesse observée et de rotation. Il accepte le lidar à 87 rayons de l'extension 0.6.0. Le contrat capteur décrit ces enregistrements ; le simulateur reste par défaut en `legacy-v1` jusqu'à sélection explicite. Les exemples humains servent ici au contrôle des entrées et à l'étalonnage ; NEAT apprend en jouant dans le simulateur. Le convertisseur n'entraîne aucun réseau.
 
 ## Vérifications
 
