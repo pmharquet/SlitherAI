@@ -179,6 +179,34 @@ def test_cpu_long_body_death_and_crowding_fixture_is_exact_across_chunks():
     assert int((~adaptive_world.alive).sum()) == 20
 
 
+def test_cpu_dense_fixture_sweeps_adaptive_budgets_on_same_geometry():
+    config = SimConfig(maps=5, worms=4, foods=32, preys=0, body_points=96,
+                       arena_radius=2400)
+    profile_world = build_long_body_fixture(config, 'cpu', seed=917)
+    candidate_maximum = sensor_candidate_profile(profile_world)['maximum']
+    low_budget = 1
+    chunk16_budget = sensor_tile_work_elements(
+        16, config.maps, config.worms, len(ANGLES), candidate_maximum)
+
+    result = run_long_body_fixture(
+        config, seed=917, chunks=(4, 16), device='cpu', repeats=2,
+        warmup_repeats=1, adaptive_work_budgets=(low_budget, chunk16_budget))
+
+    assert result['all_geometry_equal'] and result['all_parity_equal']
+    assert result['repeats'] == 2 and result['warmup_repeats'] == 1
+    fixed = {row['sensor_chunk']: row for row in result['results']
+             if row['condition'] == 'fixed'}
+    adaptive = {row['work_budget_elements']: row for row in result['results']
+                if row['condition'] == 'adaptive'}
+    assert {chunk: row['raycast_blocks'] for chunk, row in fixed.items()} == {4: 2, 16: 1}
+    assert all(len(row['observe_samples_ms']) == 2 for row in (*fixed.values(), *adaptive.values()))
+    assert adaptive[low_budget]['geometry_exact_to_reference']
+    assert adaptive[low_budget]['tile_profile']['selected_chunk_counts']['4'] == 1
+    assert adaptive[low_budget]['tile_profile']['smallest_tile_over_budget_calls'] == 1
+    assert adaptive[chunk16_budget]['tile_profile']['selected_chunk_counts']['16'] == 1
+    assert all(row['observation_exact_to_reference'] for row in adaptive.values())
+
+
 def test_adaptive_policy_sweep_is_opt_in_and_records_exact_provenance():
     random.seed(71)
     neat_config = load_config(4)
@@ -210,9 +238,17 @@ def test_adaptive_policy_sweep_is_opt_in_and_records_exact_provenance():
 def test_cuda_long_body_death_and_crowding_fixture():
     config = SimConfig(maps=16, worms=8, foods=256, preys=0, body_points=96,
                        arena_radius=2400)
-    result = run_long_body_fixture(config, seed=917, chunks=(4, 8, 16), device='cuda')
+    result = run_long_body_fixture(
+        config, seed=917, chunks=(4, 8, 16), device='cuda',
+        adaptive_work_budgets=(1, 10**9))
 
     assert result['all_parity_equal']
+    assert result['all_geometry_equal']
     assert all(row['active_body_points'] == 95 for row in result['results'])
     assert all(row['alive'] == 108 and row['dead'] == 20 for row in result['results'])
-    assert {row['sensor_chunk']: row['raycast_blocks'] for row in result['results']} == {4: 4, 8: 2, 16: 1}
+    fixed = {row['sensor_chunk']: row for row in result['results'] if row['condition'] == 'fixed'}
+    adaptive = {row['work_budget_elements']: row for row in result['results']
+                if row['condition'] == 'adaptive'}
+    assert {chunk: row['raycast_blocks'] for chunk, row in fixed.items()} == {4: 4, 8: 2, 16: 1}
+    assert adaptive[1]['tile_profile']['selected_chunk_counts']['4'] == 1
+    assert adaptive[10**9]['tile_profile']['selected_chunk_counts']['16'] == 1

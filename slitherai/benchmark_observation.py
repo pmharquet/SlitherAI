@@ -593,42 +593,166 @@ def build_long_body_fixture(config, device='cpu', seed=917):
     return world
 
 
-def run_long_body_fixture(config, seed=917, chunks=(4, 16), device='cuda'):
+_FIXTURE_STATE_FIELDS = _TRACE_STATE_FIELDS + ('arena', 'hotspots', 'initial_mass')
+
+
+def _fixture_state_snapshot(world):
+    return {name: getattr(world, name).detach().cpu().clone()
+            for name in _FIXTURE_STATE_FIELDS}
+
+
+def _fixture_state_matches(world, snapshot):
+    return all(torch.equal(getattr(world, name).detach().cpu(), expected)
+               for name, expected in snapshot.items())
+
+
+def _fixture_observe(world, work_budget_elements=None, collect_tile_stats=False,
+                     choices=(4, 8, 16)):
+    if work_budget_elements is None:
+        return world.observe(), None
+    with adaptive_sensor_tiling(work_budget_elements, choices=choices,
+                                collect_stats=collect_tile_stats) as stats:
+        observation = world.observe()
+    return observation, stats
+
+
+def run_long_body_fixture(config, seed=917, chunks=(4, 16), device='cuda',
+                          repeats=5, warmup_repeats=1, adaptive_work_budgets=(),
+                          adaptive_choices=(4, 8, 16)):
     if not torch.cuda.is_available() and torch.device(device).type == 'cuda':
         raise RuntimeError('CUDA is required for the CUDA fixture')
-    results, reference = [], None
+    budgets = tuple(int(value) for value in adaptive_work_budgets)
+    if repeats < 1 or warmup_repeats < 0:
+        raise ValueError('Need positive repeats and nonnegative warmup repeats')
+    if not chunks or len(set(chunks)) != len(chunks) or any(chunk < 1 for chunk in chunks):
+        raise ValueError('Provide distinct positive fixed sensor chunks')
+    if any(value < 1 for value in budgets) or len(set(budgets)) != len(budgets):
+        raise ValueError('Adaptive work budgets must be distinct positive integers')
+    choices = tuple(sorted(set(int(chunk) for chunk in adaptive_choices)))
+    if not choices or choices[0] < 1 or (budgets and chunks[0] not in choices):
+        raise ValueError('Need positive adaptive choices including the baseline chunk')
+
+    conditions = []
     for chunk in chunks:
         c = dataclasses.replace(config, sensor_chunk=chunk).validate()
-        world = build_long_body_fixture(c, device=device, seed=seed)
+        conditions.append(dict(kind='fixed', sensor_chunk=chunk, config=c,
+                               key=('fixed', chunk)))
+    for budget in budgets:
+        c = dataclasses.replace(config, sensor_chunk=chunks[0]).validate()
+        conditions.append(dict(kind='adaptive', work_budget_elements=budget,
+                               sensor_chunk='adaptive', config=c,
+                               key=('adaptive', budget)))
+
+    reference_world = build_long_body_fixture(
+        conditions[0]['config'], device=device, seed=seed)
+    reference_state = _fixture_state_snapshot(reference_world)
+    del reference_world
+    _sync(device)
+
+    def build_condition_world(condition):
+        world = build_long_body_fixture(condition['config'], device=device, seed=seed)
+        if not _fixture_state_matches(world, reference_state):
+            raise RuntimeError('Fixture worlds do not have identical seeded initial state')
+        return world
+
+    def observe_condition(condition, world, collect_tile_stats=False):
+        return _fixture_observe(
+            world,
+            work_budget_elements=condition.get('work_budget_elements'),
+            collect_tile_stats=collect_tile_stats, choices=choices)
+
+    # Use only one live fixture world at a time so the peak allocation reflects
+    # that condition rather than all comparison worlds held on the device.
+    # Alternate condition order each repeat to reduce clock and thermal bias.
+    timed_samples = {condition['key']: [] for condition in conditions}
+    peak_samples = {condition['key']: [] for condition in conditions}
+    for repeat_index in range(repeats):
+        order = conditions if repeat_index % 2 == 0 else list(reversed(conditions))
+        for condition in order:
+            world = build_condition_world(condition)
+            if repeat_index == 0:
+                for _ in range(warmup_repeats):
+                    observe_condition(condition, world)
+            _sync(device)
+            if torch.device(device).type == 'cuda':
+                torch.cuda.reset_peak_memory_stats(device)
+            started = time.perf_counter()
+            observation, _ = observe_condition(condition, world)
+            _sync(device)
+            timed_samples[condition['key']].append((time.perf_counter() - started) * 1000.)
+            peak_samples[condition['key']].append(
+                torch.cuda.max_memory_allocated(device) / (1024 ** 2)
+                if torch.device(device).type == 'cuda' else None)
+            del observation, world
+            _sync(device)
+
+    reference = None
+    results = []
+    for condition in conditions:
+        world = build_condition_world(condition)
+        observation, tile_stats = observe_condition(
+            condition, world, collect_tile_stats=condition['kind'] == 'adaptive')
         _sync(device)
-        if torch.device(device).type == 'cuda':
-            torch.cuda.reset_peak_memory_stats(device)
-        started = time.perf_counter()
-        observation = world.observe()
-        _sync(device)
-        elapsed_ms = (time.perf_counter() - started) * 1000.
-        if reference is None:
-            reference = observation.detach().cpu().clone()
         actual = observation.detach().cpu()
-        peak_mib = (torch.cuda.max_memory_allocated(device) / (1024 ** 2)
-                    if torch.device(device).type == 'cuda' else None)
+        if reference is None:
+            reference = actual.clone()
+        difference = (actual - reference).abs()
         candidate_profile = sensor_candidate_profile(world)
-        results.append(dict(
-            sensor_chunk=chunk,
-            raycast_blocks=sensor_ray_block_count(c, chunk),
-            observe_ms=elapsed_ms,
+        samples = timed_samples[condition['key']]
+        peak_mib_samples = [sample for sample in peak_samples[condition['key']] if sample is not None]
+        row = dict(
+            condition=condition['kind'],
+            sensor_chunk=condition['sensor_chunk'],
+            work_budget_elements=condition.get('work_budget_elements'),
+            geometry_exact_to_reference=True,
+            raycast_blocks=(sensor_ray_block_count(condition['config'], condition['sensor_chunk'])
+                            if condition['kind'] == 'fixed' else None),
+            observe_ms=statistics.median(samples),
+            observe_samples_ms=samples,
+            repeats=repeats,
+            warmup_repeats=warmup_repeats,
             observation_exact_to_reference=torch.equal(actual, reference),
-            observation_max_abs_difference=float((actual - reference).abs().max()),
+            observation_max_abs_difference=float(difference.max()) if difference.numel() else 0.,
             alive=int(world.alive.sum().item()),
             dead=int((~world.alive).sum().item()),
             active_body_points=world.active_body_points(),
             candidate_count_profile=candidate_profile,
-            peak_allocated_mib=peak_mib,
-        ))
-        del world, observation, actual
+            peak_allocated_mib=max(peak_mib_samples) if peak_mib_samples else None,
+        )
+        if tile_stats is not None:
+            profile = tile_stats.summary()
+            raycast_blocks_by_chunk = {
+                chunk: sensor_ray_block_count(condition['config'], int(chunk))
+                for chunk in profile['selected_chunk_counts']
+            }
+            row['tile_profile'] = profile
+            row['raycast_blocks_by_chunk'] = raycast_blocks_by_chunk
+            row['raycast_blocks'] = sum(
+                count * raycast_blocks_by_chunk[str(chunk)]
+                for chunk, count in profile['selected_chunk_counts'].items())
+        results.append(row)
+        del observation, actual, world
         _sync(device)
+
+    fixed_summary = {}
+    for chunk in chunks:
+        row = next(item for item in results
+                   if item['condition'] == 'fixed' and item['sensor_chunk'] == chunk)
+        fixed_summary[str(chunk)] = dict(median_observe_ms=row['observe_ms'], samples=repeats)
+    adaptive_summary = {
+        str(budget): dict(median_observe_ms=next(
+            row['observe_ms'] for row in results
+            if row['condition'] == 'adaptive' and row['work_budget_elements'] == budget),
+            samples=repeats)
+        for budget in budgets
+    }
     return dict(mode='long_body_death_crowding_fixture', device=str(device), seed=seed,
-                config=dataclasses.asdict(config), results=results,
+                config=dataclasses.asdict(config), reference_chunk=chunks[0],
+                repeats=repeats, warmup_repeats=warmup_repeats,
+                timing='median synchronized observe() time; condition order alternates every repeat; warmups and parity/profile passes excluded',
+                fixed_timing_summary=fixed_summary, adaptive_timing_summary=adaptive_summary,
+                results=results,
+                all_geometry_equal=all(row['geometry_exact_to_reference'] for row in results),
                 all_parity_equal=all(row['observation_exact_to_reference'] for row in results))
 
 
@@ -668,6 +792,8 @@ def main():
                         help='repeat these chunks on diagnostic seeds to test same-chunk determinism')
     parser.add_argument('--adaptive-work-budgets', type=int, nargs='+',
                         help='opt-in sweep of candidate-work budgets; does not change saved settings')
+    parser.add_argument('--fixture-repeats', type=int, default=5,
+                        help='synchronized observation timing repeats for the long-body fixture')
     parser.add_argument('--device', choices=('cpu', 'cuda'), default='cuda')
     parser.add_argument('--cuda-long-fixture', action='store_true',
                         help='compare observation parity on crowded long bodies and deaths')
@@ -706,7 +832,9 @@ def main():
                 config, maps=min(config.maps, 16), worms=min(config.worms, 8),
                 foods=min(config.foods, 256), preys=0, body_points=max(config.body_points, 96))
             output['long_body_fixture'] = run_long_body_fixture(
-                fixture_config, seed=args.seed, chunks=chunks, device=args.device)
+                fixture_config, seed=args.seed, chunks=chunks, device=args.device,
+                repeats=args.fixture_repeats,
+                adaptive_work_budgets=args.adaptive_work_budgets or ())
         rendered = json.dumps(output, indent=2)
         out = args.out
         if out is None:
