@@ -39,3 +39,9 @@ Mise à jour : 24 septembre 2026, environ 18:50 Europe/Paris.
 - `docs/overnight/audit-tool.md` + audit exécutable
 - `docs/overnight/performance-review.md`
 - Journal d'expériences et rapport final au matin, avec provenance du meilleur modèle.
+
+- 19:29 : validation G5 (index4) : fitness14,069 contre9,451 à G1 ; nourriture25,783 contre21,843 ; survie13/32 contre7/32. Différence appariée fitness+4,618, IC95% normal approximatif[-2,243;11,479] : encourageant mais non concluant. Continuer la référence, sans changer récompense ou spéciation.
+- Benchmark G5 terminé et pause=false restauré : épisodes courts64cartes15s, chunk16 ~1,94× plus rapide que4, mais traces CUDA mixtes (actions identiques, certains états/récompenses différents), et cas dense corps longs plus lent (23,69 contre14,71ms). Aucun changement de chunk déployé. Agent prépare contrôle même-chunk et localisation numérique de divergence, sans nouvelle fenêtre GPU autorisée.
+- Diagnostic reprise : sérialisation neat DefaultGenomeConfig.__getstate__ appelle next(node_indexer), piste concrète de mutation de compteur. audit_training autorisé à preuve minimale et patch ciblé train.py + tests/test_checkpoint_purity.py, sans déploiement. Distinguer relabellisation des neurones et changement comportemental.
+- Correction d'audit requise : checkpoint3 contient38espèces dont deux à1membre ; élites réelles possibles74, pas76. min_species_size2 ne libère pas de budget agrégé selon le calcul, mais allocations individuelles peuvent varier. Vérifier helper contre reproduction réelle avant conclusions numériques.
+- Outil holdout ced943e : revue demande garde explicite des fonctions/clés supportées par CUDA et provenance code runtime/versions. Tests CPU uniquement ; graine finale toujours réservée.
