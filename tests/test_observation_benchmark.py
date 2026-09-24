@@ -12,7 +12,7 @@ import torch
 from slitherai.benchmark_observation import (
     _capture_episode_trace, _event_difference, _fixed_actions, build_long_body_fixture,
     load_run_champion, run_adaptive_tile_sweep, run_long_body_fixture, run_paired_policy_episode,
-    run_tiling_trace_diagnostic,
+    run_policy_timing_only, run_tiling_trace_diagnostic,
     sensor_version_from_schema,
     sensor_candidate_profile, sensor_ray_block_count,
 )
@@ -100,6 +100,42 @@ def test_paired_policy_episode_has_per_step_observation_action_reward_and_state_
                for row in result['same_chunk_repeats'] if row['sensor_chunk'] == 4)
     assert all(row['numeric_diagnostics']['states']['first_divergence'] is None
                for row in result['same_chunk_repeats'] if row['sensor_chunk'] == 16)
+
+
+def test_policy_timing_only_runs_two_untraced_cpu_episodes(monkeypatch):
+    import slitherai.benchmark_observation as benchmark
+
+    metrics = {key: [float(index + 1)] for index, key in enumerate((
+        'fitness', 'alive', 'food_gain', 'boost_spent', 'kills',
+        'border_death', 'collision_death'))}
+    calls = []
+
+    def fake_play(genome, neat_config, config, device, seed, seconds, trace=False,
+                  collect_tile_stats=True, **kwargs):
+        calls.append((config.sensor_chunk, device, seed, seconds, trace, collect_tile_stats))
+        return metrics, .125, None
+
+    monkeypatch.setattr(benchmark, '_play', fake_play)
+    config = SimConfig(maps=5, worms=2, foods=32, preys=0, body_points=16)
+    result = run_policy_timing_only(config, object(), object(), seed=1038282,
+                                    seconds=60, device='cpu', chunks=(4, 8))
+
+    assert calls == [(4, 'cpu', 1038282, 60, False, False),
+                     (8, 'cpu', 1038282, 60, False, False)]
+    assert result['mode'] == 'policy_timing_only'
+    assert result['parity'].startswith('not measured')
+    assert result['warmup_episodes'] == 0 and result['repetitions_per_chunk'] == 1
+    assert [row['sensor_chunk'] for row in result['timed_episodes']] == [4, 8]
+    assert all(row['wall_ms'] == 125. and row['peak_allocated_mib'] is None
+               and row['peak_delta_mib'] is None for row in result['timed_episodes'])
+    assert all(row['metrics']['fitness'] == 1. for row in result['timed_episodes'])
+    assert result['wall_ms_ratio_first_chunk_over_second'] == 1.
+
+
+def test_policy_timing_only_requires_two_distinct_chunks():
+    config = SimConfig(maps=1, worms=2, foods=16, preys=0, body_points=16)
+    with pytest.raises(ValueError, match='exactly two distinct'):
+        run_policy_timing_only(config, object(), object(), device='cpu', chunks=(4, 4))
 
 
 def test_trace_numeric_diagnostic_reports_first_field_delta_and_rng_equality():

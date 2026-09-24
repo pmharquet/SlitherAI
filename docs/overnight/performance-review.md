@@ -123,6 +123,41 @@ The adaptive selector chose chunk 16 on all 120 observations (candidate counts m
 
 The baseline pause window ended about 90 seconds after request; `finally` restored `pause=false`, preserving `stop=false` and `arena=19`. The service briefly returned a stale paused status immediately after restoration; a fresh read showed training at generation 13, 128/1280 episodes, later advancing to 384/1280. Both original trainer pairs remained: baseline 20948→8028 and export-v1 pilot 22248→19860. The pilot advanced from 160 to 224 episodes during the window and 320 on a fresh post-window read. The baseline settings SHA remained unchanged.
 
+## G15 chunk-4/chunk-8 attempt: timeout, no comparison result
+
+The reviewed one-shot runner used isolated checkout `46de6ca59f7eecb335b18255eb35d589c7349d8f`, the frozen G15 generation-14 genome 2867 payload (SHA-256 `682fd88f3e4c1d8a7adaa57bdb2654c3d7dc9c709289fc043200394c42d70731`, gene fingerprint `12faa26e179b9c7db319f834b60b39579652fb8d5e03947c4b7d3f59f7278d3e`), settings SHA-256 `e8d7f1245a5ee5644e28606b8442797cbf3e24091949139917ddd576ef8f401b`, seed 1038282, and 64 maps × 16 worms. It requested chunk 4 versus 8 for 90 simulated seconds using `--paired-policy`.
+
+The run timed out at its 145-second subprocess limit before writing benchmark JSON. Paired mode performs separate timed and traced episodes for each chunk, four 90-second episodes total, so the experiment did not fit the authorized window. There is no usable timing comparison, action/reward/state parity result, fitness comparison, or CUDA peak-memory measurement. A process snapshot just before cleanup showed 1,185,792,000 bytes of host working set for the benchmark child; that is not a GPU peak-memory measurement.
+
+The control sidecar is [paired-policy-G15-id2867-chunk4-8-seed1038282-90s-46de6ca-control.json](../../runs/20260924-163112-852097/analysis/paired-policy-G15-id2867-chunk4-8-seed1038282-90s-46de6ca-control.json), SHA-256 `F355151F973165EDD691688AF7456BF9169EFE85483C778917DBE1ABEAE976FE`. It records `pause=false, stop=false, arena=3` both before and after, acknowledged pause, successful restoration, and the same baseline trainer wrapper/child PIDs `15144→6820`. The run started in training at generation 19 and 384/1280 completed episodes. Immediate post-restore status was still generation 19/384; a fresh read soon after showed training at 448/1280, batch 4/4. The benchmark process and verified child were cleaned up. No trainer was stopped or restarted and no settings changed.
+
+The replacement mode executes exactly one untraced `_play` episode per chunk. Its fixed follow-up command is:
+
+```powershell
+C:\Docker\SlitherAI\.venv\Scripts\python.exe -m slitherai.benchmark_observation --policy-timing-only --run C:\Docker\SlitherAI\runs\20260924-163112-852097 --model-payload C:\Users\88mat\AppData\Local\Temp\slitherai-g15-best-validation-ref-20260924-163112.pkl --maps 64 --worms 16 --seconds 60 --seeds 1038282 --chunks 4 8 --device cuda --out C:\Docker\SlitherAI\runs\20260924-163112-852097\analysis\policy-timing-only-G15-id2867-chunk4-8-seed1038282-60s-46de6ca.json
+```
+
+This reports synchronized episode wall time, final summary metrics, and per-episode PyTorch allocated-memory high-water and delta. It has no warmup and one sample per chunk, so it is a throughput estimate only and does not test trajectory parity. The dedicated pause runner pins the benchmark module SHA, payload/settings/checkpoint hashes, and unique output paths; it keeps the same 180-second total window, 145-second subprocess ceiling, exact pause restoration, and verified-process-tree cleanup. Runner and CUDA command are prepared for review; no second GPU run was launched.
+
+The timing-only branch passed a CPU CLI smoke using the same explicit frozen payload at 2 maps × 16 worms for 0.1 seconds. The full focused observation suite passed 16 tests with one CUDA-only test skipped. The [CPU smoke JSON](</C:/Users/88mat/AppData/Local/Temp/slitherai-policy-timing-only-cpu-smoke-20260925-0005.json>) (SHA-256 `A53A9E745D64B9AB62D4FDBFBA4A199B7B2B1E44F839C43C9323EE54AB148159`) confirms the two-row output and model preflight, not GPU performance or per-step parity.
+
+## G15 chunk-4/chunk-8 timing-only sample
+
+After review, the bounded timing-only runner completed in 65.329 seconds on the RTX 4060 Laptop GPU with PyTorch 2.8.0+cu129. It used the isolated checkout at `46de6ca59f7eecb335b18255eb35d589c7349d8f`, benchmark module SHA-256 `d67cc79500ea9e0613f8854ab7e17e89b8043b0104fca9cc13efeb4f25af8f7c`, the same frozen G15 generation-14/id-2867 payload and settings hashes above, 64 maps × 16 worms, seed 1038282, and 60 simulated seconds. The run settings remained legacy-v1 with saved `sensor_chunk=4`; the helper varied the chunk only in its per-episode copied config.
+
+| Chunk | Raycast blocks | Episode wall time | PyTorch peak allocated | Allocated before | Peak delta | Final summary fitness |
+|---:|---:|---:|---:|---:|---:|---:|
+| 4 | 16 | 36,231.05 ms | 169.09 MiB | 0.00 MiB | 169.09 MiB | 12.6269008 |
+| 8 | 8 | 24,215.89 ms | 173.46 MiB | 8.13 MiB | 165.33 MiB | 12.6269008 |
+
+This single sample measured chunk 8 at 1.496× the chunk-4 throughput (33.2% less wall time) and 4.37 MiB higher total allocated high-water. The second episode began with 8.13 MiB still allocated, which is why its incremental peak delta is lower despite the higher total high-water. The reported final summary metrics were exactly equal for this one seed: alive 0.65625, food gain 17.8873428, boost spent 0.0421875, kills 0.109375, border deaths 0.0625, and collision deaths 0.28125.
+
+The benchmark intentionally had no warmup and only one sample per chunk in fixed order 4 then 8. It captured no per-step observations, actions, rewards or states. Equal final summaries do not establish trajectory parity, and this one un-warmed pair does not establish a general throughput gain. It is a directional estimate only; keep chunk 4 as the active/default setting and do not deploy chunk 8 from this result.
+
+Raw result: [policy-timing-only-G15-id2867-chunk4-8-seed1038282-60s-46de6ca.json](../../runs/20260924-163112-852097/analysis/policy-timing-only-G15-id2867-chunk4-8-seed1038282-60s-46de6ca.json), SHA-256 `7c05fcf2ae14440ee3d325961487e416c78cfee9a27dfacabc9fd12d80f3ca3f`. Control and provenance: [policy-timing-only-G15-id2867-chunk4-8-seed1038282-60s-46de6ca-control.json](../../runs/20260924-163112-852097/analysis/policy-timing-only-G15-id2867-chunk4-8-seed1038282-60s-46de6ca-control.json), SHA-256 `9b6de96568885c960a842aeac9b2a93f785477517ca4979c88eb877f143eb1b7`.
+
+The sidecar records `pause=false, stop=false, arena=3` before and after, acknowledged pause, and successful restoration. The same trainer pair `15144→6820` remained alive. Immediate post-restore status was training at generation 19, 1152/1280 completed episodes; a fresh read showed 1216/1280 and batch 4/4. No trainer was stopped or restarted, and no settings were modified.
+
 ### Versioned deployment proposal (not implemented)
 
 If a later review accepts an opt-in experiment, use a separate branch such as `codex/sensor-tiling-budget-v1`. Add a versioned tiling policy to run configuration, for example `sensor_tile_policy=candidate_work_budget_v1`, `sensor_work_budget_elements=4000000`, and `sensor_tile_choices=[4,8,16]`; retain fixed `sensor_chunk=4` as the behavior for old settings that omit the policy. Expose the same values through explicit training and service CLI options. Save the effective policy, budget, choices and estimator version in `settings.json` and benchmark/training provenance. Keep `sensor_version` (legacy-v1/export-v1 observation semantics) a separate field.

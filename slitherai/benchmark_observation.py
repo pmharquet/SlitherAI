@@ -526,6 +526,63 @@ def run_paired_policy_episode(config, genome, neat_config, seeds=(938271, 103828
     )
 
 
+def run_policy_timing_only(config, genome, neat_config, seed=1038282,
+                           seconds=60., device='cuda', chunks=(4, 8)):
+    """Time exactly one untraced policy episode per chunk.
+
+    This mode deliberately omits parity traces and warmups so a bounded
+    reference-window run can fit a short pause budget. Its timings are a
+    single-sample throughput estimate, not evidence of trajectory parity.
+    """
+    if len(chunks) != 2 or len(set(chunks)) != 2 or any(chunk < 1 for chunk in chunks):
+        raise ValueError('Timing-only policy mode requires exactly two distinct positive chunks')
+    if seconds <= 0:
+        raise ValueError('Need positive episode seconds')
+
+    timed = []
+    for chunk in chunks:
+        c = dataclasses.replace(config, sensor_chunk=int(chunk)).validate()
+        memory_before_mib = peak_allocated_mib = peak_delta_mib = None
+        if torch.device(device).type == 'cuda':
+            _sync(device)
+            memory_before_mib = torch.cuda.memory_allocated(device) / (1024 ** 2)
+            torch.cuda.reset_peak_memory_stats(device)
+        metrics, elapsed, _ = _play(genome, neat_config, c, device, seed, seconds,
+                                     trace=False, collect_tile_stats=False)
+        if torch.device(device).type == 'cuda':
+            peak_allocated_mib = torch.cuda.max_memory_allocated(device) / (1024 ** 2)
+            peak_delta_mib = max(0., peak_allocated_mib - memory_before_mib)
+        timed.append(dict(
+            seed=int(seed), sensor_chunk=int(chunk),
+            raycast_blocks=sensor_ray_block_count(c, int(chunk)),
+            requested_sim_seconds=float(seconds), wall_ms=float(elapsed * 1000.),
+            peak_allocated_mib=peak_allocated_mib,
+            allocated_before_mib=memory_before_mib,
+            peak_delta_mib=peak_delta_mib,
+            metrics=_metric_summary(metrics),
+        ))
+
+    timing_by_chunk = {str(row['sensor_chunk']): row['wall_ms'] for row in timed}
+    ratio = (timing_by_chunk[str(chunks[0])] / timing_by_chunk[str(chunks[1])]
+             if timing_by_chunk[str(chunks[1])] else None)
+    return dict(
+        mode='policy_timing_only', device=str(device),
+        accelerator=(torch.cuda.get_device_name(torch.device(device))
+                     if torch.device(device).type == 'cuda' and torch.cuda.is_available() else None),
+        torch_version=torch.__version__, maps=config.maps, worms=config.worms,
+        seed=int(seed), seconds=float(seconds), chunks=[int(chunk) for chunk in chunks],
+        fixed_opponents='slitherai.evaluation.heuristic',
+        timing=('one synchronized untraced play_episode per chunk; includes world setup, '
+                'policy, opponents, simulation and metrics'),
+        memory=('PyTorch max_memory_allocated high-water per episode; peak_delta subtracts '
+                'currently allocated bytes before that episode'),
+        parity='not measured: this mode performs no trace or repeat pass',
+        warmup_episodes=0, repetitions_per_chunk=1, timed_episodes=timed,
+        wall_ms_ratio_first_chunk_over_second=ratio,
+        result_scope='single-seed, single-sample throughput estimate only',
+    )
+
+
 def run_adaptive_tile_sweep(config, genome, neat_config, work_budgets,
                             seeds=(938271, 1038282), seconds=15., device='cuda',
                             baseline_chunk=4, choices=(4, 8, 16), warmup_seconds=None):
@@ -1003,6 +1060,8 @@ def main():
                         help='explicit saved genome payload to use with the run settings')
     parser.add_argument('--paired-policy', action='store_true',
                         help='run untraced policy timings and separate per-step parity traces')
+    parser.add_argument('--policy-timing-only', action='store_true',
+                        help='run exactly one untraced policy episode per requested chunk; no parity pass')
     parser.add_argument('--seconds', type=float, default=15., help='simulated duration for each paired policy episode')
     parser.add_argument('--seeds', type=int, nargs='+', default=[938271, 1038282])
     parser.add_argument('--diagnostic-seeds', type=int, nargs='*', default=[],
@@ -1021,7 +1080,12 @@ def main():
     parser.add_argument('--out', type=Path, help='optional JSON result path; defaults to run/analysis for policy jobs')
     args = parser.parse_args()
     torch.set_num_threads(1)
-    if (args.paired_policy or args.cuda_long_fixture or args.adaptive_work_budgets
+    if (args.policy_timing_only and (args.paired_policy or args.cuda_long_fixture
+            or args.adaptive_work_budgets or args.diagnose_tiling_budget is not None)):
+        parser.error('--policy-timing-only cannot be combined with paired or fixture modes')
+    if args.policy_timing_only and len(args.seeds) != 1:
+        parser.error('--policy-timing-only requires exactly one --seeds value')
+    if (args.policy_timing_only or args.paired_policy or args.cuda_long_fixture or args.adaptive_work_budgets
             or args.diagnose_tiling_budget is not None):
         root = Path(__file__).resolve().parents[1]
         run = args.run
@@ -1039,7 +1103,12 @@ def main():
             config = dataclasses.replace(config, body_points=args.body_points)
         config.validate()
         chunks = tuple(args.chunks or (4, 8, 16))
-        output = dict(mode='combined_policy_and_fixture', champion=source)
+        output = dict(mode='policy_timing_only' if args.policy_timing_only
+                      else 'combined_policy_and_fixture', champion=source)
+        if args.policy_timing_only:
+            output['policy_timing_only'] = run_policy_timing_only(
+                config, genome, neat_config, seed=args.seeds[0], seconds=args.seconds,
+                device=args.device, chunks=chunks)
         if args.paired_policy:
             policy = run_paired_policy_episode(config, genome, neat_config,
                 seeds=args.seeds, seconds=args.seconds, device=args.device, chunks=chunks,
