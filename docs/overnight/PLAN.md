@@ -41,6 +41,8 @@ Garder un inventaire des paramètres : capteurs/normalisation ; dynamique et den
 
 Vers 07:00–07:30, cesser les expériences risquées et réserver le temps nécessaire à comparer quelques champions sur un jeu final indépendant, avec mêmes cartes et adversaires, graines pré-définies et scores par partie. Conserver le meilleur candidat démontré, les réserves et les incertitudes. À 08:00 : ne plus lancer de changements/expériences ; finaliser le bilan, désactiver le heartbeat et terminer le goal une fois les livrables produits. Préserver toute sauvegarde ; éviter de perdre une génération en cours par arrêt brutal.
 
+Jeu final réservé dès 19:09 : graine **741852963**, **64 arènes indépendantes**, **90 secondes**, adversaires de référence existants et positions focales `(arange(64)*7) % worms`. Ne pas utiliser cette graine pour les entraînements, réglages ou benchmarks préparatoires. Choisir d'abord le candidat principal sur la validation existante, puis comparer au modèle initial et aux contrôleurs de référence sur ce jeu final. Si l'on choisit un autre champion après consultation de ce test, le signaler comme sélection sur le test ; aucune affirmation d'évaluation indépendante du gagnant sans autre jeu tenu à l'écart.
+
 ## Économie
 
 Pas de boucle de tokens permanente ni de réveils supplémentaires pour combler l'attente. Rapports bornés, prompts spécialisés, sources ciblées. Luna utilise aussi le quota : ne pas supposer qu'il est gratuit ou illimité. Pas de reset de quota sans confirmation explicite séparée.
