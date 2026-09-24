@@ -1,10 +1,107 @@
 import math
+from contextvars import ContextVar
+from contextlib import contextmanager
 from dataclasses import asdict
 import torch
 from .config import SimConfig
 from .geometry import point_segment_distance2, ray_circle, ray_capsule
 from .schema import ANGLES, INPUTS
 from .rewards import reward_score, reward_terms
+
+
+DEFAULT_SENSOR_CHUNKS = (4, 8, 16)
+_ADAPTIVE_SENSOR_TILE_POLICY = ContextVar('adaptive_sensor_tile_policy', default=None)
+
+
+def sensor_tile_work_elements(sensor_chunk, maps, worms, rays, max_candidates):
+    """Estimate tile scratch as observer × ray × candidate elements."""
+    if sensor_chunk < 1 or maps < 1 or worms < 1 or rays < 1 or max_candidates < 0:
+        raise ValueError('Tile size, maps, worms and rays must be positive; candidates nonnegative')
+    return min(int(sensor_chunk), int(maps)) * int(worms) * int(rays) * int(max_candidates)
+
+
+def choose_sensor_chunk(max_candidates, maps, worms, rays, work_budget_elements,
+                        choices=DEFAULT_SENSOR_CHUNKS):
+    """Choose the largest tile under an explicit candidate-work budget.
+
+    If even the smallest available tile exceeds the budget, return that smallest
+    tile. This is a calculational tiling choice only; it never drops candidates.
+    """
+    candidates = tuple(sorted(set(int(chunk) for chunk in choices)))
+    if not candidates or candidates[0] < 1:
+        raise ValueError('Need positive sensor chunk choices')
+    if work_budget_elements < 1:
+        raise ValueError('work_budget_elements must be positive')
+    needed = {
+        chunk: sensor_tile_work_elements(chunk, maps, worms, rays, max_candidates)
+        for chunk in candidates
+    }
+    fitting = [chunk for chunk in candidates if needed[chunk] <= work_budget_elements]
+    return max(fitting) if fitting else candidates[0]
+
+
+class _AdaptiveSensorTileStats:
+    def __init__(self, work_budget_elements, choices, collect_stats):
+        self.work_budget_elements = int(work_budget_elements)
+        self.choices = tuple(sorted(set(int(chunk) for chunk in choices)))
+        self.collect_stats = bool(collect_stats)
+        if not self.choices or self.choices[0] < 1:
+            raise ValueError('Need positive sensor chunk choices')
+        if self.work_budget_elements < 1:
+            raise ValueError('work_budget_elements must be positive')
+        self._selected = {chunk: 0 for chunk in self.choices}
+        self._candidate_counts = []
+        self._selected_work = []
+        self._fallback_over_budget = 0
+
+    def select(self, max_candidates, maps, worms, rays):
+        chunk = choose_sensor_chunk(
+            max_candidates, maps, worms, rays, self.work_budget_elements, self.choices)
+        if not self.collect_stats:
+            return chunk
+        work = sensor_tile_work_elements(chunk, maps, worms, rays, max_candidates)
+        self._selected[chunk] += 1
+        self._candidate_counts.append(int(max_candidates))
+        self._selected_work.append(work)
+        if work > self.work_budget_elements:
+            self._fallback_over_budget += 1
+        return chunk
+
+    @staticmethod
+    def _percentile(values, fraction):
+        ordered = sorted(values)
+        return int(ordered[min(len(ordered) - 1, math.ceil(fraction * len(ordered)) - 1)])
+
+    def summary(self):
+        candidates = self._candidate_counts
+        work = self._selected_work
+        return dict(
+            policy='candidate_work_budget_v1',
+            work_budget_elements=self.work_budget_elements,
+            available_chunks=list(self.choices),
+            stats_collected=self.collect_stats,
+            observation_calls=len(candidates),
+            selected_chunk_counts={str(chunk): count for chunk, count in self._selected.items()},
+            candidate_count_quantiles=(dict(min=min(candidates), p50=self._percentile(candidates, .5),
+                                             p90=self._percentile(candidates, .9), max=max(candidates))
+                                       if candidates else None),
+            selected_work_elements=(dict(max=max(work), p50=self._percentile(work, .5))
+                                    if work else None),
+            smallest_tile_over_budget_calls=self._fallback_over_budget,
+        )
+
+
+@contextmanager
+def adaptive_sensor_tiling(work_budget_elements, choices=DEFAULT_SENSOR_CHUNKS,
+                           collect_stats=True):
+    """Temporarily enable explicit candidate-work-budget tiling in this context."""
+    stats = _AdaptiveSensorTileStats(work_budget_elements, choices, collect_stats)
+    token = _ADAPTIVE_SENSOR_TILE_POLICY.set(stats)
+    try:
+        yield stats
+    finally:
+        _ADAPTIVE_SENSOR_TILE_POLICY.reset(token)
+
 
 class WorldBatch:
     """Independent arenas in tensors; no cross-arena interaction. Units are world units/seconds.
@@ -243,6 +340,9 @@ class WorldBatch:
         distance_along = torch.arange(count, device=d).repeat(w)[None, None] * self.spacing[:, owner][:, None]
         relevant &= ~mine[None] | (distance_along >= 3 * radius[..., None])
         max_candidates = int(relevant.sum(-1).max().item())
+        tile_policy = _ADAPTIVE_SENSOR_TILE_POLICY.get()
+        sensor_chunk = (c.sensor_chunk if tile_policy is None else
+                        tile_policy.select(max_candidates, m, w, r))
         if max_candidates:
             # Top-k includes EVERY relevant capsule because k is the maximum relevance count.
             selected = torch.topk(relevant.to(torch.uint8), max_candidates, dim=-1, sorted=False).indices
@@ -254,8 +354,8 @@ class WorldBatch:
             flat_dir = direction.reshape(n, r, 2)
             flat_out = observation.reshape(n, r, 6)
             flat_range = ranges.reshape(n, r)
-            for start in range(0, n, c.sensor_chunk * w):
-                sl = slice(start, start + c.sensor_chunk * w)
+            for start in range(0, n, sensor_chunk * w):
+                sl = slice(start, start + sensor_chunk * w)
                 hit = ray_capsule(flat_dir[sl, :, None], ga[sl, None], gb[sl, None], gr[sl, None])
                 for channel, matching in ((2, ~own[sl]), (3, own[sl])):
                     near = torch.where((valid[sl] & matching)[:, None], hit, torch.inf).amin(-1)

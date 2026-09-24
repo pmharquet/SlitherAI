@@ -20,7 +20,7 @@ import torch
 
 from . import evaluation
 from .config import SimConfig
-from .sim import WorldBatch
+from .sim import WorldBatch, adaptive_sensor_tiling
 
 
 def _fixed_actions(world):
@@ -298,24 +298,32 @@ def sensor_candidate_profile(world):
 
 
 def _play(genome, neat_config, config, device, seed, seconds, trace=False,
-          trace_references=(), retain_trace_values=False):
+          trace_references=(), retain_trace_values=False,
+          adaptive_work_budget_elements=None, collect_tile_stats=True,
+          adaptive_tile_choices=(4, 8, 16)):
     focal = np.arange(config.maps, dtype=np.int64) * 7 % config.worms
     genomes = [genome] * config.maps
-    if trace:
-        with _capture_episode_trace(trace_references, retain_trace_values) as captured:
-            metrics = evaluation.play_episode(
-                genomes, neat_config, config, device, seed, focal, seconds,
-                shared_random=False, policy='neat')
-        _sync(device)
-        return metrics, captured
+    tile_context = (adaptive_sensor_tiling(adaptive_work_budget_elements,
+                                           choices=adaptive_tile_choices,
+                                           collect_stats=collect_tile_stats)
+                    if adaptive_work_budget_elements is not None
+                    else contextlib.nullcontext(None))
+    with tile_context as tile_policy:
+        if trace:
+            with _capture_episode_trace(trace_references, retain_trace_values) as captured:
+                metrics = evaluation.play_episode(
+                    genomes, neat_config, config, device, seed, focal, seconds,
+                    shared_random=False, policy='neat')
+            _sync(device)
+            return metrics, captured, (tile_policy.summary() if tile_policy is not None else None)
 
-    _sync(device)
-    started = time.perf_counter()
-    metrics = evaluation.play_episode(
-        genomes, neat_config, config, device, seed, focal, seconds,
-        shared_random=False, policy='neat')
-    _sync(device)
-    return metrics, time.perf_counter() - started
+        _sync(device)
+        started = time.perf_counter()
+        metrics = evaluation.play_episode(
+            genomes, neat_config, config, device, seed, focal, seconds,
+            shared_random=False, policy='neat')
+        _sync(device)
+        return metrics, time.perf_counter() - started, (tile_policy.summary() if tile_policy is not None else None)
 
 
 def _metric_summary(metrics):
@@ -375,7 +383,7 @@ def run_paired_policy_episode(config, genome, neat_config, seeds=(938271, 103828
         traces = {}
         for chunk in order:
             c = dataclasses.replace(config, sensor_chunk=chunk).validate()
-            metrics, elapsed = _play(genome, neat_config, c, device, seed, seconds)
+            metrics, elapsed, _ = _play(genome, neat_config, c, device, seed, seconds)
             row = dict(seed=int(seed), sensor_chunk=chunk, wall_ms=elapsed * 1000.,
                        raycast_blocks=sensor_ray_block_count(c, chunk),
                        requested_sim_seconds=seconds, metrics=_metric_summary(metrics))
@@ -388,7 +396,7 @@ def run_paired_policy_episode(config, genome, neat_config, seeds=(938271, 103828
             if detailed and chunk != reference_chunk:
                 references = ((f'chunk_{reference_chunk}', traces[reference_chunk][1]),)
             retain = detailed and (chunk == reference_chunk or chunk in repeat_chunks)
-            metrics, trace = _play(
+            metrics, trace, _ = _play(
                 genome, neat_config, c, device, seed, seconds, trace=True,
                 trace_references=references, retain_trace_values=retain)
             traces[chunk] = (metrics, trace)
@@ -406,7 +414,7 @@ def run_paired_policy_episode(config, genome, neat_config, seeds=(938271, 103828
             for chunk in repeat_chunks:
                 reference_metrics, reference_trace = traces[chunk]
                 c = dataclasses.replace(config, sensor_chunk=chunk).validate()
-                metrics, repeated_trace = _play(
+                metrics, repeated_trace, _ = _play(
                     genome, neat_config, c, device, seed, seconds, trace=True,
                     trace_references=((f'chunk_{chunk}_first_run', reference_trace),))
                 repeat_result = _trace_parity(reference_trace, repeated_trace)
@@ -450,6 +458,101 @@ def run_paired_policy_episode(config, genome, neat_config, seeds=(938271, 103828
         timing_summary=timing_summary,
         all_parity_equal=(all(row['equal'] and row['summary_metrics_equal'] for row in parity)
                           and all(row['equal'] and row['summary_metrics_equal'] for row in repeats)),
+    )
+
+
+def run_adaptive_tile_sweep(config, genome, neat_config, work_budgets,
+                            seeds=(938271, 1038282), seconds=15., device='cuda',
+                            baseline_chunk=4, choices=(4, 8, 16), warmup_seconds=None):
+    """Compare an opt-in work-budget tile policy with fixed baseline chunk episodes."""
+    budgets = tuple(int(value) for value in work_budgets)
+    if not budgets or any(value < 1 for value in budgets) or len(set(budgets)) != len(budgets):
+        raise ValueError('Provide distinct positive work budgets')
+    if seconds <= 0 or not seeds:
+        raise ValueError('Need positive episode seconds and at least one common seed')
+    if warmup_seconds is None:
+        warmup_seconds = config.dt
+    if warmup_seconds < 0:
+        raise ValueError('warmup_seconds must be nonnegative')
+    if (not choices or len(set(choices)) != len(choices) or any(chunk < 1 for chunk in choices)
+            or baseline_chunk not in choices):
+        raise ValueError('baseline_chunk must be one of the adaptive choices')
+
+    fixed_config = dataclasses.replace(config, sensor_chunk=baseline_chunk).validate()
+    timed = []
+    parity = []
+    for seed_index, seed in enumerate(seeds):
+        conditions = [None, *budgets]
+        if seed_index % 2:
+            conditions.reverse()
+
+        # Exercise each path before timing so the first CUDA context/kernel setup
+        # does not become a chunk-specific timing penalty.
+        if warmup_seconds:
+            for budget in conditions:
+                _play(genome, neat_config, fixed_config, device, seed, warmup_seconds,
+                      adaptive_work_budget_elements=budget,
+                      collect_tile_stats=False, adaptive_tile_choices=choices)
+
+        metrics_by_condition = {}
+        for budget in conditions:
+            metrics, elapsed, _ = _play(
+                genome, neat_config, fixed_config, device, seed, seconds,
+                adaptive_work_budget_elements=budget,
+                collect_tile_stats=False, adaptive_tile_choices=choices)
+            metrics_by_condition[budget] = metrics
+            timed.append(dict(seed=int(seed), sensor_chunk=(baseline_chunk if budget is None else 'adaptive'),
+                              work_budget_elements=budget, wall_ms=elapsed * 1000.,
+                              metrics=_metric_summary(metrics)))
+
+        fixed_metrics, fixed_trace, _ = _play(
+            genome, neat_config, fixed_config, device, seed, seconds, trace=True)
+        if _metric_summary(fixed_metrics) != _metric_summary(metrics_by_condition[None]):
+            raise RuntimeError('Fixed trace metrics differ from the timed fixed run')
+        for budget in budgets:
+            adaptive_metrics, adaptive_trace, tile_profile = _play(
+                genome, neat_config, fixed_config, device, seed, seconds, trace=True,
+                adaptive_work_budget_elements=budget, collect_tile_stats=True,
+                adaptive_tile_choices=choices)
+            comparison = _trace_parity(fixed_trace, adaptive_trace)
+            comparison['summary_metrics_equal'] = _metric_summary(fixed_metrics) == _metric_summary(adaptive_metrics)
+            comparison.update(seed=int(seed), baseline_chunk=baseline_chunk,
+                              work_budget_elements=budget, tile_profile=tile_profile)
+            parity.append(comparison)
+
+    fixed_samples = [row['wall_ms'] for row in timed if row['work_budget_elements'] is None]
+    adaptive_summary = {}
+    for budget in budgets:
+        samples = [row['wall_ms'] for row in timed if row['work_budget_elements'] == budget]
+        adaptive_summary[str(budget)] = dict(
+            median_wall_ms=statistics.median(samples), samples=len(samples),
+            speedup_over_fixed=(statistics.median(fixed_samples) / statistics.median(samples)))
+
+    return dict(
+        mode='adaptive_candidate_work_tile_sweep',
+        runtime_override='opt-in context only; no SimConfig/checkpoint setting changed',
+        device=str(device),
+        torch_version=torch.__version__,
+        accelerator=(torch.cuda.get_device_name(torch.device(device))
+                     if torch.device(device).type == 'cuda' and torch.cuda.is_available() else None),
+        tile_policy=dict(name='candidate_work_budget_v1',
+                         choices=list(sorted(set(choices))),
+                         estimate='min(tile_maps,maps) * worms * rays * max_candidates',
+                         selection='largest tile whose estimate is <= work_budget_elements; otherwise smallest tile'),
+        config=dataclasses.asdict(config),
+        baseline_chunk=baseline_chunk,
+        work_budgets=list(budgets),
+        seeds=[int(seed) for seed in seeds],
+        seconds=seconds,
+        warmup_seconds=warmup_seconds,
+        timing='synchronized untraced full play_episode wall time; includes setup, policy, opponents, simulation and metrics',
+        parity='separate SHA-256 per-step comparisons for observations, actions, full simulator state and rewards; no tensor snapshots retained',
+        timed_episodes=timed,
+        timing_summary=dict(fixed_chunk=dict(median_wall_ms=statistics.median(fixed_samples),
+                                             samples=len(fixed_samples)),
+                            adaptive=adaptive_summary),
+        parity_episodes=parity,
+        all_parity_equal=all(row['equal'] and row['summary_metrics_equal'] for row in parity),
     )
 
 
@@ -563,13 +666,15 @@ def main():
                         help='seeds to trace in detail for first divergent step/field')
     parser.add_argument('--repeat-chunks', type=int, nargs='*', default=[],
                         help='repeat these chunks on diagnostic seeds to test same-chunk determinism')
+    parser.add_argument('--adaptive-work-budgets', type=int, nargs='+',
+                        help='opt-in sweep of candidate-work budgets; does not change saved settings')
     parser.add_argument('--device', choices=('cpu', 'cuda'), default='cuda')
     parser.add_argument('--cuda-long-fixture', action='store_true',
                         help='compare observation parity on crowded long bodies and deaths')
     parser.add_argument('--out', type=Path, help='optional JSON result path; defaults to run/analysis for policy jobs')
     args = parser.parse_args()
     torch.set_num_threads(1)
-    if args.paired_policy or args.cuda_long_fixture:
+    if args.paired_policy or args.cuda_long_fixture or args.adaptive_work_budgets:
         root = Path(__file__).resolve().parents[1]
         run = args.run
         if run is None:
@@ -592,6 +697,10 @@ def main():
                 seeds=args.seeds, seconds=args.seconds, device=args.device, chunks=chunks,
                 diagnostic_seeds=args.diagnostic_seeds, repeat_chunks=args.repeat_chunks)
             output['policy'] = policy
+        if args.adaptive_work_budgets:
+            output['adaptive_tile_sweep'] = run_adaptive_tile_sweep(
+                config, genome, neat_config, work_budgets=args.adaptive_work_budgets,
+                seeds=args.seeds, seconds=args.seconds, device=args.device)
         if args.cuda_long_fixture:
             fixture_config = dataclasses.replace(
                 config, maps=min(config.maps, 16), worms=min(config.worms, 8),

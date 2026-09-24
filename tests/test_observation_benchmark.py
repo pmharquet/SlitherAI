@@ -8,12 +8,15 @@ import torch
 
 from slitherai.benchmark_observation import (
     _capture_episode_trace, _event_difference, _fixed_actions, build_long_body_fixture,
-    run_long_body_fixture, run_paired_policy_episode,
+    run_adaptive_tile_sweep, run_long_body_fixture, run_paired_policy_episode,
     sensor_candidate_profile, sensor_ray_block_count,
 )
 from slitherai.config import SimConfig
 from slitherai.network import load_config
-from slitherai.sim import WorldBatch
+from slitherai.schema import ANGLES
+from slitherai.sim import (
+    WorldBatch, adaptive_sensor_tiling, choose_sensor_chunk, sensor_tile_work_elements,
+)
 
 
 def _long_mixed_world(sensor_chunk):
@@ -50,6 +53,21 @@ def test_sensor_chunk_preserves_long_body_and_death_observations():
     assert observations[0].shape == (8, 530)
     assert torch.equal(observations[0], observations[1])
     assert torch.equal(observations[0], observations[2])
+
+
+def test_adaptive_sensor_chunk_budget_boundaries_and_block_counts():
+    maps, worms, rays, candidates = 17, 8, len(ANGLES), 20
+    work = {chunk: sensor_tile_work_elements(chunk, maps, worms, rays, candidates)
+            for chunk in (4, 8, 16)}
+
+    assert choose_sensor_chunk(candidates, maps, worms, rays, work[4] - 1) == 4
+    assert choose_sensor_chunk(candidates, maps, worms, rays, work[4]) == 4
+    assert choose_sensor_chunk(candidates, maps, worms, rays, work[8] - 1) == 4
+    assert choose_sensor_chunk(candidates, maps, worms, rays, work[8]) == 8
+    assert choose_sensor_chunk(candidates, maps, worms, rays, work[16] - 1) == 8
+    assert choose_sensor_chunk(candidates, maps, worms, rays, work[16]) == 16
+    config = SimConfig(maps=maps, worms=worms, foods=32, preys=0, body_points=96)
+    assert [sensor_ray_block_count(config, chunk) for chunk in (4, 8, 16)] == [5, 3, 2]
 
 
 def test_paired_policy_episode_has_per_step_observation_action_reward_and_state_parity():
@@ -149,6 +167,40 @@ def test_cpu_long_body_death_and_crowding_fixture_is_exact_across_chunks():
     assert [sensor_ray_block_count(config, chunk) for chunk in (4, 8, 16)] == [5, 3, 2]
     profile = sensor_candidate_profile(worlds[0])
     assert profile['distinct'] > 1 and profile['nonzero'] > 0
+
+    adaptive_world = build_long_body_fixture(
+        dataclasses.replace(config, sensor_chunk=4), 'cpu', seed=917)
+    budget = sensor_tile_work_elements(16, config.maps, config.worms, len(ANGLES), profile['maximum'])
+    with adaptive_sensor_tiling(budget) as tile_stats:
+        adaptive_observation = adaptive_world.observe()
+    assert torch.equal(adaptive_observation, observations[0])
+    assert tile_stats.summary()['selected_chunk_counts']['16'] == 1
+    assert adaptive_world.active_body_points() == 95
+    assert int((~adaptive_world.alive).sum()) == 20
+
+
+def test_adaptive_policy_sweep_is_opt_in_and_records_exact_provenance():
+    random.seed(71)
+    neat_config = load_config(4)
+    population = neat.Population(neat_config)
+    genome = next(iter(population.population.values()))
+    config = SimConfig(maps=17, worms=2, foods=32, preys=0, body_points=16,
+                       arena_radius=1200)
+
+    result = run_adaptive_tile_sweep(
+        config, genome, neat_config, work_budgets=(1, 10**9),
+        seeds=(71,), seconds=.2, device='cpu')
+
+    assert result['all_parity_equal']
+    assert result['runtime_override'].startswith('opt-in')
+    assert len(result['timing_summary']['adaptive']) == 2
+    profiles = {row['work_budget_elements']: row['tile_profile']
+                for row in result['parity_episodes']}
+    assert profiles[1]['selected_chunk_counts']['4'] == 2
+    assert profiles[1]['smallest_tile_over_budget_calls'] == 2
+    assert profiles[10**9]['selected_chunk_counts']['16'] == 2
+    assert all(row['equal'] and row['summary_metrics_equal']
+               for row in result['parity_episodes'])
 
 
 @pytest.mark.skipif(
