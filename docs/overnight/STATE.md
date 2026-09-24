@@ -31,6 +31,7 @@ Mise à jour : 24 septembre 2026, environ 18:50 Europe/Paris.
 - Jeu final indépendant réservé dans PLAN.md (graine741852963,64cartes90s) ; ne pas le consommer lors des réglages.
 - Inventaire des paramètres `a21ed67`, corrections d'unités `19f2db5`, tests numériques de bord `27068ac` examinés. Aucun défaut de signe/rotation/censure du bord constaté dans les cas analytiques ; 3 tests agent passent. L'agent prépare désormais l'outil de comparaison finale indépendant, CPU uniquement pour ses tests.
 - Audit initial `2b43458` : revue demande de corriger les moyennes de sélection (history.mean) distinguées des moyennes brutes par partie et de préserver les scripts/preuves du replay. Un mélange de staging a été corrigé par l'agent avant instruction d'arrêt ; les commits antérieurs sont vérifiés préservés. Nouvelle règle `git commit --only` et aucune réécriture partagée.
+- Benchmark complet `cd1dc4f` revu : observations/actions/récompenses/état hashés dans des passes séparées des mesures de durée ; tests CPU couvrent réellement des nombres de blocs différents. **performance_review est autorisé et seul opérateur** d'une nouvelle pause ≤180 s dès présence de checkpoint-5 et validation/generation-0004.json ; il doit restaurer pause dans finally. Ne pas interpréter cette pause comme une panne ni relancer le processus. Comparaison chunk4/16 sur2graines15s64cartes +casCUDAcorpslongs ; aucun déploiement de configuration encore autorisé.
 
 ## Livrables attendus
 
