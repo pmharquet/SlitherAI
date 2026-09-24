@@ -10,41 +10,52 @@ Lecture seule du run `runs/20260924-163112-852097`, de `parameter-map.md`, du tr
 - Le signal d’ancrage et la sélection restent souvent proches. Une contre-factuelle exacte à partir des champs enregistrés `score` et `anchor_score`, avec le poids d’ancrage porté de 0,8 à 0,9, garde le meilleur génome de 11 cohortes sur 12 et conserve en moyenne 9 des 10 premiers. Ce test gratuit n’identifie pas de raison forte pour changer la pondération de sélection cette nuit.
 - Il n’existe qu’une graine de validation distincte : 938271, 32 cartes, 90 s. La réutiliser est acceptable pour un filtre apparié de présélection, pas pour une preuve indépendante. La graine finale 741852963 reste réservée.
 
+### Contre-factuelle exacte du plancher (CPU, G12)
+
+`docs/overnight/diagnose_speciation.py` a rejoué uniquement `reproduce()` en mémoire pour `checkpoint-12`, en injectant les fitness de `episodes/generation-0012.json` et les mesures de `history.jsonl`. Au snapshot consulté, G13 était encore en cours : `checkpoint-12` et l’épisode G12 étaient la dernière paire complète. Aucun simulateur n’a tourné. Le checkpoint contient 256 génomes, mais seulement 76 valeurs `fitness`/`anchor_fitness` non nulles des élites de la génération précédente ; il ne suffit donc pas seul pour reconstruire la reproduction après l’évaluation G12. L’épisode sauvegardé fournit le score des 256 génomes et ses cinq scénarios.
+
+| `min_species_size` | Espèces actives | Allocation par espèce | Au plancher effectif | Élites / nouveaux enfants | Somme top 4 / top 8 |
+|---:|---:|---|---:|---:|---:|
+| 4 (effectif 4) | 38 | 5:4, 6:18, 7:7, 8:4, 9:3, 10:2 | 0 | 76 / 180 | 38 / 71 |
+| 2 (effectif 2, car `elitism=2`) | 38 | 4:1, 5:2, 6:19, 7:7, 8:4, 9:3, 10:2 | 0 | 76 / 180 | 38 / 71 |
+
+Le changement effectif touche seulement deux espèces : l’ID 1 passe de 5 à 4 places et l’ID 5 de 5 à 6. Les parts top 4 et top 8 restent respectivement 14,84 % et 27,73 % ; la plus grande part reste 3,91 %. Le plancher 4 n’est actif dans aucune allocation G12 : `38×4=152` est une borne théorique, pas 152 places effectivement immobilisées. L’effet mesuré de 4→2 est minime sur cette reproduction ; `min_species_size` est donc rétrogradé au rang 3 et n’est pas un essai prioritaire cette nuit. Reproduction exacte : `.\.venv\Scripts\python.exe docs/overnight/diagnose_speciation.py --no-replay --allocation-generation 12`.
+
 ## Trois essais à classer
 
 | Rang | Paramètre unique | A → B | Pourquoi ce test a un signal mesurable |
 |---|---|---|---|
-| 1 | `min_species_size` | 4 → 2 | Les 38 espèces occupent un minimum effectif de 4 descendants chacune, car `elitism=2` et le plancher est `max(min_species_size, elitism)`. Cela réserve au moins 152 des 256 places aux planchers actuels, tant que ces espèces survivent. B abaisserait ce minimum à 2 et laisserait la sélection ajustée répartir davantage de places. C’est un contraste direct, visible en une génération. |
-| 2 | `survival_threshold` | 0,30 → 0,45 | Le nombre de parents par espèce est `max(2, ceil(seuil × taille_espece))`. Pour une espèce de 6 ou 7 génomes, B élargit typiquement le groupe reproducteur de 2→3 ou 3→4 sans changer son quota de descendants. C’est mesurable par les lignées parentales et les génotypes issus de chaque espèce. |
-| 3 | `node_add_prob` | 0,15 → 0,25 | Davantage d’enfants tenteraient de scinder un lien en un neurone et deux connexions. La moyenne reste sous un nœud caché par génome à G12 ; l’essai mesure si un peu plus de structure améliore l’ancre et la validation. Il interagit avec `node_delete_prob=0,02`, `conn_add_prob=0,50`, le réseau récurrent et le coût d’activation. |
+| 1 | `survival_threshold` | 0,30 → 0,45 | Avec les tailles G12, le pool de parents passe de 98 à 136 places au total et change dans 35 des 38 espèces. Les élites et les quotas de descendants restent inchangés. |
+| 2 | `node_add_prob` | 0,15 → 0,25 | Davantage d’enfants tenteraient de scinder un lien en un neurone et deux connexions. La moyenne reste sous un nœud caché par génome à G12 ; l’essai mesure si un peu plus de structure améliore l’ancre et la validation. Il interagit avec `node_delete_prob=0,02`, `conn_add_prob=0,50`, le réseau récurrent et le coût d’activation. |
+| 3 | `min_species_size` | 4 → 2 | La reproduction exacte G12 ne touche que deux allocations d’un slot, sans espèce au plancher, sans changement des parts top 4/top 8 et sans changement du nombre d’enfants générés. Le contraste est donc mesurable mais peu prometteur à court terme. |
 
-### Rang 1 — plancher de descendants par espèce
+### Rang 1 — taille du groupe de parents
 
-**Mécanisme.** Dans la reproduction NEAT-Python 1.1.0 installée, le plancher effectif est `max(min_species_size, elitism)`. Les allocations par espèce sont ensuite normalisées pour atteindre 256 ; les élites sont copiées, puis des parents sont tirés parmi la fraction survivante. Le changement 4→2 ne supprime pas automatiquement des espèces : il donne surtout aux espèces performantes une chance de recevoir plus que leur minimum. `WindowedStagnation.species_elitism=4` est un autre réglage — la protection contre la stagnation — et resterait inchangé.
-
-**Hypothèse testable.** Après une génération, B augmente le fitness d’ancrage moyen de la population suivante et/ou le nombre de descendants issus des espèces à meilleur score, sans chute marquée de diversité effective ni de survie sur les 32 cartes de validation.
-
-**A/B borné.** Depuis un même checkpoint complet et immuable, lancer un bras contrôle à 4 et un bras à 2, une génération chacun, mêmes 1 280 épisodes, même graine d’entraînement et mêmes ancres. Mesurer par bras l’allocation par espèce, l’occupation, les génotypes/topologies distincts, la fitness d’ancrage de génération et les morts. Puis comparer les champions de branche sur les mêmes 32 cartes, 90 s, graine 938271, avec différences appariées par carte. Une seule génération par bras ; si l’intervalle apparié de fitness inclut zéro ou si B perd nettement en survie/diversité, ne pas prolonger la branche.
-
-### Rang 2 — taille du groupe de parents
-
-**Mécanisme.** NEAT trie les membres de chaque espèce par fitness, copie jusqu’à deux élites, puis ne tire les parents que parmi les `ceil(survival_threshold × taille)` premiers, avec un minimum de deux. Passer de 0,30 à 0,45 élargit la source des croisements dans les espèces assez grandes ; cela ne modifie ni les quotas d’espèces ni le score d’ancrage. Le paramètre interagit avec `min_species_size` : tester séparément, depuis le même checkpoint de départ.
+**Mécanisme.** NEAT trie les membres de chaque espèce par fitness, copie jusqu’à deux élites, puis ne tire les parents que parmi les `ceil(survival_threshold × taille)` premiers, avec un minimum de deux. Au checkpoint G12, le seuil 0,30 donne 98 parents admissibles cumulés (18 pools de 2, 18 de 3, 2 de 4) ; 0,45 en donne 136 (3 de 2, 15 de 3, 15 de 4, 5 de 5) et change le pool de 35 espèces. Cela ne change ni les quotas d’espèces ni les 76 copies élites/180 nouveaux enfants de la reproduction de référence.
 
 **Hypothèse testable.** B augmente la variété de parents et de topologies dans les enfants sans diluer leur score d’ancrage moyen ; la fitness et la survie appariées de validation restent au moins au niveau du contrôle. Un groupe de parents plus large peut aussi conserver des génotypes moins adaptés et affaiblir la pression de sélection.
 
-**A/B borné.** Deux bras depuis le même checkpoint immuable et la même graine d’entraînement, un seul changement 0,30→0,45, une génération chacun. Enregistrer les parents distincts, les copies élites, les topologies, la fitness d’ancrage moyenne et la survie. Comparer ensuite les champions de branche sur la même validation de 32 cartes à 938271 avec différence appariée. Arrêter après une génération ; ne pas conclure à un avantage si l’intervalle apparié inclut zéro ou si le score moyen d’ancrage recule.
+**A/B borné.** Deux bras depuis le même checkpoint immuable et la même graine d’entraînement, un seul changement 0,30→0,45, une génération chacun. Enregistrer les parents distincts réellement tirés, leurs paires, les topologies, la fitness d’ancrage moyenne et la survie. Comparer les champions sur la même validation de 32 cartes à 938271 avec différence appariée. Arrêter après une génération ; ne pas conclure à un avantage si l’intervalle apparié inclut zéro ou si le score moyen d’ancrage recule.
 
-### Rang 3 — ajout de neurones
+### Rang 2 — ajout de neurones
 
-**Mécanisme.** Avec `single_structural_mutation=False`, NEAT tire indépendamment le test Bernoulli `node_add_prob` pour chaque mutation d’enfant ; une addition de nœud désactive un lien et en crée deux. `conn_add_prob=0,50` reste inchangé et peut s’ajouter à cette mutation. Le comportement hérité peut donc évoluer plus vite en complexité, au prix de mutations perturbatrices et d’un peu plus de travail réseau.
+**Mécanisme.** Avec `single_structural_mutation=False`, NEAT tire indépendamment le test Bernoulli `node_add_prob` pour chaque mutation d’enfant ; une addition de nœud désactive un lien et en crée deux. `conn_add_prob=0,50` reste inchangé et peut s’ajouter à cette mutation. Le comportement hérité peut évoluer plus vite en complexité, au prix de mutations perturbatrices et d’un peu plus de travail réseau.
 
 **Hypothèse testable.** B augmente les nœuds cachés et les topologies actives, puis améliore le score d’ancrage et la validation par rapport au contrôle. Si seule la complexité augmente, ou si l’amélioration apparaît uniquement sur le score d’entraînement, l’essai n’est pas concluant.
 
-**A/B borné.** Même départ immuable, mêmes ancres/seed, un seul changement `0,15→0,25`, une génération par bras, puis les 32 cartes à 938271. Comparer moyenne et médiane des nœuds cachés, topologies distinctes, fitness d’ancrage, survie, deaths et fitness appariée de validation. Ne pas augmenter à nouveau `node_add_prob` si une génération ne donne pas de gain apparié clair.
+**A/B borné.** Même départ immuable, mêmes ancres/seed, un seul changement 0,15→0,25, une génération par bras, puis les 32 cartes à 938271. Comparer moyenne et médiane des nœuds cachés, topologies distinctes, fitness d’ancrage, survie, morts et fitness appariée de validation. Ne pas augmenter à nouveau `node_add_prob` si une génération ne donne pas de gain apparié clair.
+
+### Rang 3 — plancher de descendants par espèce
+
+**Mécanisme.** Dans la reproduction NEAT-Python 1.1.0 installée, le plancher effectif est `max(min_species_size, elitism)`. Les allocations d’espèces sont normalisées pour atteindre 256 ; `WindowedStagnation.species_elitism=4` est une protection contre la stagnation distincte et resterait inchangée. La contre-factuelle G12 ci-dessus établit que le plancher ne s’appliquait pas aux espèces observées.
+
+**Hypothèse testable.** D’autres distributions de fitness pourraient rendre le plancher actif ; dans ce cas, 4→2 peut libérer des places au profit des espèces performantes. Le snapshot G12 prédit toutefois peu d’effet pour cette population.
+
+**A/B borné.** Ne lancer que si un futur checkpoint montre des espèces dont l’allocation théorique touche réellement le plancher. Depuis un même checkpoint, comparer 4 et 2 pendant une génération, suivre les allocations et nouveaux enfants, puis utiliser les mêmes 32 cartes à 938271. Si aucune allocation n’est au plancher, fermer l’essai sans validation coûteuse.
 
 ## Budget, compatibilité et décision
 
-Les cinq dernières durées terminées des lignes G1–G12 ont une médiane d’environ 1 006 s par génération (~16,8 min) pour 256 génomes et cinq épisodes. Un bras contrôle commun plus les trois variantes représentent au moins quatre générations complètes, environ 67 minutes de simulation au rythme mesuré, auxquelles s’ajoutent validation, checkpoints et éventuel ralentissement. Le run CUDA principal était encore actif à la lecture ; lancer ces bras sur le même GPU ferait concurrence à la course. **Aucun essai d’entraînement supplémentaire n’est donc recommandé tant que la course principale utilise ce GPU ou qu’il ne reste pas explicitement une fenêtre après elle.** Si une fenêtre apparaît, ne lancer qu’un contraste à la fois, avec la graine 938271 ; ne pas utiliser 741852963.
+Les cinq dernières durées terminées des lignes G1–G12 ont une médiane d’environ 1 006 s par génération (~16,8 min) pour 256 génomes et cinq épisodes. Un contrôle commun plus les trois variantes représentent au moins quatre générations complètes, environ 67 minutes de simulation au rythme mesuré, auxquelles s’ajoutent validation, checkpoints et éventuel ralentissement. Le run CUDA principal était encore actif à la lecture ; lancer ces bras sur le même GPU ferait concurrence à la course. **Aucun essai d’entraînement supplémentaire n’est donc recommandé tant que la course principale utilise ce GPU ou qu’il ne reste pas explicitement une fenêtre après elle.** Si une fenêtre apparaît, prioriser 0,30→0,45 puis 0,15→0,25 ; ne tester 4→2 que si un futur audit constate un plancher actif. Pour chaque comparaison, utiliser la graine 938271 ; ne pas utiliser 741852963.
 
 La commande actuelle `--initialize-from` préserve la configuration NEAT embarquée au checkpoint et n’offre pas de surcharge de paramètres NEAT ou de protocole. Pour effectuer ces A/B de façon reproductible, il faut un outil expérimental explicite qui inscrit le diff de configuration et son hash dans le nouveau run. Ne pas modifier le checkpoint, les settings ou le protocole du run source. Pour un changement de récompense, créer en plus une version de récompense/protocole distincte et rescorer tous les modèles ; la reprise stricte et le warm-start actuels refusent le mélange des objectifs.
 
