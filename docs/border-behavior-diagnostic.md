@@ -1,6 +1,6 @@
 # Diagnostic du comportement près des bordures
 
-`scripts/diagnose_border_behavior.py` rejoue un ou deux génomes sauvegardés sur les cartes déterministes de validation et produit un rapport JSON. Il utilise le `settings.json` de chaque run, le chargeur de payloads du projet, `WorldBatch`, `BatchedNetwork` et l’heuristique existante pour les adversaires. Il impose CPU et n’écrit aucun fichier dans les runs.
+`scripts/diagnose_border_behavior.py` rejoue un ou deux génomes sauvegardés sur les cartes déterministes de validation et produit un rapport JSON. Il utilise le `settings.json` de chaque run, le chargeur de payloads du projet, `WorldBatch`, `BatchedNetwork` et l’heuristique existante pour les adversaires. CPU est le périphérique par défaut; CUDA est disponible avec `--device cuda`. Le périphérique utilisé figure dans le rapport. Le script n’écrit aucun fichier dans les runs.
 
 Depuis la racine du dépôt, après la fin de l’entraînement GPU :
 
@@ -8,7 +8,7 @@ Depuis la racine du dépôt, après la fin de l’entraînement GPU :
 .\.venv\Scripts\python.exe -m scripts.diagnose_border_behavior `
   --candidate runs\run-a runs\run-a\best-validation.pkl `
   --candidate runs\run-b runs\run-b\best-validation.pkl `
-  --device cpu --output docs\border-replay.json
+  --device cuda --output docs\border-replay.json
 ```
 
 Chaque `--candidate` prend le dossier contenant `settings.json`, puis le payload du génome. Donnez une ou deux paires. Les paramètres de simulation sauvegardés doivent être identiques pour comparer les mêmes cartes. Par défaut, le script rejoue les 32 cartes, pendant 90 secondes, avec la graine `938271` et la même attribution de siège que `fixed_validation`.

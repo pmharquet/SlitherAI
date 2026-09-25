@@ -1,6 +1,6 @@
 """Replay saved genomes and summarize focal-worm behavior near arena borders.
 
-This read-only CPU diagnostic reuses the project's saved payload loader,
+This read-only diagnostic reuses the project's saved payload loader,
 WorldBatch, BatchedNetwork, and heuristic opponents. It does not start a trainer
 or modify run artifacts. By default it replays the fixed validation seed and
 focal-seat schedule; reduce maps and seconds for a quick smoke run.
@@ -10,7 +10,7 @@ Example::
     python -m scripts.diagnose_border_behavior \
       --candidate runs/run-a runs/run-a/best-validation.pkl \
       --candidate runs/run-b runs/run-b/best-validation.pkl \
-      --device cpu --output border-diagnostic.json
+      --device cuda --output border-diagnostic.json
 
 Quick CPU smoke run::
 
@@ -41,15 +41,16 @@ BORDER_FRACTIONS = (0.05, 0.10, 0.20)
 
 
 @torch.inference_mode()
-def replay(genome, neat_config, config, *, seed, seconds):
+def replay(genome, neat_config, config, *, seed, seconds, device='cpu'):
     """Replay the standard focal-versus-heuristic game and collect tick stats."""
     config.validate()
     maps, worms = config.maps, config.worms
-    world = WorldBatch(config, device='cpu', seed=seed)
-    rows = torch.arange(maps)
+    device = torch.device(device)
+    world = WorldBatch(config, device=device, seed=seed)
+    rows = torch.arange(maps, device=device)
     focal_np = np.arange(maps, dtype=np.int64) * 7 % worms
-    focal = torch.as_tensor(focal_np, dtype=torch.long)
-    network = BatchedNetwork([genome] * maps, neat_config, device='cpu')
+    focal = torch.as_tensor(focal_np, dtype=torch.long, device=device)
+    network = BatchedNetwork([genome] * maps, neat_config, device=device)
     limits = round(float(seconds) / config.dt)
     if limits < 1:
         raise ValueError('seconds must include at least one simulation tick')
@@ -112,8 +113,8 @@ def replay(genome, neat_config, config, *, seed, seconds):
         'alive_maps': int(world.alive[rows, focal].sum().item()),
         'survival_fraction': float(world.alive[rows, focal].float().mean().item()),
         'fitness_mean': float(fitness.mean().item()),
-        'fitness_by_map': [float(v) for v in fitness.tolist()],
-        'food_gain_by_map': [float(v) for v in world.gained[rows, focal].tolist()],
+        'fitness_by_map': [float(v) for v in fitness.detach().cpu().tolist()],
+        'food_gain_by_map': [float(v) for v in world.gained[rows, focal].detach().cpu().tolist()],
         'food_gain_mean': float(world.gained[rows, focal].mean().item()),
         'border_deaths': int(world.border_deaths[rows, focal].sum().item()),
         'collision_deaths': int(world.collision_deaths[rows, focal].sum().item()),
@@ -159,8 +160,8 @@ def main(argv=None):
                         help='replay duration, as in fixed validation (default: 90)')
     parser.add_argument('--seed', type=int, default=VALIDATION_SEED,
                         help=f'validation seed (default: {VALIDATION_SEED})')
-    parser.add_argument('--device', choices=('cpu',), default='cpu',
-                        help='CPU is enforced to avoid competing with GPU training')
+    parser.add_argument('--device', choices=('cpu', 'cuda'), default='cpu',
+                        help='execution device (default: cpu)')
     parser.add_argument('--output', type=Path,
                         help='optional JSON output path; stdout is always written')
     args = parser.parse_args(argv)
@@ -168,6 +169,8 @@ def main(argv=None):
         parser.error('provide one or two --candidate pairs')
     if args.maps < 1 or args.seconds <= 0:
         parser.error('--maps and --seconds must be positive')
+    if args.device == 'cuda' and not torch.cuda.is_available():
+        parser.error('--device cuda requested but CUDA is unavailable')
 
     candidates = []
     shared_config = None
@@ -180,7 +183,8 @@ def main(argv=None):
             shared_config = config_identity
         elif config_identity != shared_config:
             raise ValueError('Candidates must have identical saved simulation settings to replay the same maps')
-        result = replay(genome, neat_config, config, seed=args.seed, seconds=args.seconds)
+        result = replay(genome, neat_config, config, seed=args.seed,
+                        seconds=args.seconds, device=args.device)
         result.update({
             'run_settings': source['settings_file'],
             'run_settings_sha256': source['settings_file_sha256'],
@@ -195,7 +199,7 @@ def main(argv=None):
 
     report = {
         'diagnostic': 'border_behavior_replay_v1',
-        'device': 'cpu',
+        'device': args.device,
         'seed': args.seed,
         'maps': args.maps,
         'seconds': args.seconds,
