@@ -139,6 +139,69 @@ def test_mixed_reference_v4_rotates_candidates_and_balances_all_sixteen_seats():
         [0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11], [12, 13, 14, 15]]
 
 
+def test_mixed_reference_v5_shuffles_maps_and_rotates_every_genome_seat():
+    games = mixed_reference_scenarios(81, 7, training_games=1, mixed_version=5)
+    repeated = mixed_reference_scenarios(81, 7, training_games=1, mixed_version=5)
+    later = mixed_reference_scenarios(81, 8, training_games=1, mixed_version=5)
+    assert games == repeated and len(games) == 1
+    assignment = np.asarray(games[0]['assignment']).reshape(256, 16)
+    later_assignment = np.asarray(later[0]['assignment']).reshape(256, 16)
+    assert np.all((assignment >= 0).sum(axis=1) == 1)
+    assert np.all((assignment == -1).sum(axis=1) == 15)
+    assert sorted(assignment[assignment >= 0].tolist()) == list(range(256))
+    np.testing.assert_array_equal((assignment >= 0).sum(axis=0), np.full(16, 16))
+    assert not np.array_equal(assignment, later_assignment)
+    for genome in range(256):
+        seat = int(np.argwhere(assignment == genome)[0, 1])
+        later_seat = int(np.argwhere(later_assignment == genome)[0, 1])
+        assert later_seat == (seat + 1) % 16
+    assert games[0]['seat_counts'] == [16] * 16
+
+
+def test_mixed_reference_v5_evaluates_each_genome_once_and_uses_rank_stagnation(tmp_path, monkeypatch):
+    from slitherai import train as train_module
+
+    neat_config = load_config(256)
+    genomes = list(neat.Population(neat_config).population.items())
+    # Assignment values index this ordered list, even when NEAT keys are sparse.
+    genomes = [(500 + index * 3, genome) for index, (_, genome) in enumerate(genomes)]
+    for key, genome in genomes:
+        genome.key = key
+    config = SimConfig(maps=256, worms=16, foods=8, body_points=8, preys=0,
+                       sensor_chunk=8)
+    trainer = Trainer(config, tmp_path, 'cpu', seed=81, validation_every=5,
+                      opponent_mode='mixed-reference', training_games=1)
+    trainer.episode_seconds = .1
+    trainer.controls = lambda: {}
+    trainer.publish_preview = lambda control: None
+    trainer.status = lambda phase, **extra: None
+    calls = []
+
+    def fake_mixed_episode(candidates, neat_config, sim_config, device, seed, assignment,
+                           seconds, shared_random=True, on_tick=None, controls=None):
+        assignment = np.asarray(assignment, dtype=np.int64)
+        calls.append((seed, assignment.copy(), seconds))
+        values = np.full(sim_config.maps * sim_config.worms, -1000., dtype=np.float64)
+        slots = np.flatnonzero(assignment >= 0)
+        values[slots] = assignment[slots].astype(np.float64)
+        return dict(fitness=values.tolist(), food_gain=values.tolist())
+
+    monkeypatch.setattr(train_module, 'play_mixed_population_episode', fake_mixed_episode)
+    trainer.evaluate(genomes, neat_config)
+    schedule = mixed_reference_scenarios(81, 0, training_games=1, mixed_version=5)
+    assert len(calls) == 1
+    assert calls[0][0] == schedule[0]['seed']
+    np.testing.assert_array_equal(calls[0][1], schedule[0]['assignment'])
+    assert calls[0][2] == .1
+    np.testing.assert_allclose([genome.fitness for _, genome in genomes], np.arange(256))
+    np.testing.assert_allclose([genome.stagnation_fitness for _, genome in genomes],
+                               midrank_percentiles(np.arange(256)))
+    episode = json.loads((tmp_path / 'episodes' / 'generation-0000.json').read_text())
+    assert episode['protocol'] == 'mixed-reference-v5'
+    assert episode['aggregation'] == 'single_game_score'
+    assert all(len(row) == 1 for row in episode['game_scores'])
+
+
 def test_mixed_reference_metrics_remap_to_candidate_genomes_only():
     assignment = np.asarray([0, -1, 1, -1, 2, -1, 3, -1])
     slot_values = np.asarray([10., 101., 20., 102., 30., 103., 40., 104.])
@@ -360,6 +423,8 @@ def test_mixed_reference_layout_is_fixed_to_the_pilot_protocol():
     assert validate_mixed_reference_layout(legacy_config, 256, 2, mixed_version=2) == 32
     assert validate_mixed_reference_layout(config, 256, 2, mixed_version=3) == 64
     assert validate_mixed_reference_layout(config, 256, 4, mixed_version=4) == 64
+    v5_config = dataclasses.replace(config, maps=256)
+    assert validate_mixed_reference_layout(v5_config, 256, 1, mixed_version=5) == 256
     with pytest.raises(ValueError, match='Mixed-reference v3 requires'):
         validate_mixed_reference_layout(dataclasses.replace(config, maps=32), 256, 2, mixed_version=3)
     with pytest.raises(ValueError, match='Mixed-reference v3 requires'):
@@ -370,6 +435,9 @@ def test_mixed_reference_layout_is_fixed_to_the_pilot_protocol():
     with pytest.raises(ValueError, match='Mixed-reference v4 requires'):
         validate_mixed_reference_layout(dataclasses.replace(config, maps=32), 256, 4,
                                         mixed_version=4)
+    with pytest.raises(ValueError, match='Mixed-reference v5 requires'):
+        validate_mixed_reference_layout(dataclasses.replace(v5_config, maps=64), 256, 1,
+                                        mixed_version=5)
     with pytest.raises(ValueError, match='sensor_chunk=8'):
         validate_mixed_reference_layout(dataclasses.replace(config, sensor_chunk=4), 256, 4,
                                         mixed_version=4)

@@ -69,10 +69,10 @@ def mixed_reference_scenarios(seed, generation, population_size=256,
                               mixed_version=None):
     """Assign each genome once per game against versioned fixed-opponent mixes.
 
-    Versions 1 and 2 preserve their original 8+8 assignment. Version 3 uses
-    4 candidates and 12 heuristic slots over 64 maps, rotating the four-seat
-    candidate block between games and across generations. A value of -1 marks
-    a heuristic-controlled slot.
+    Versions 1 and 2 preserve their original 8+8 assignment. Versions 3 and 4
+    use four candidates over 64 maps. Version 5 gives each genome one of 256
+    maps and rotates its seat by generation. A value of -1 marks a heuristic
+    controlled slot.
     """
     protocol = protocol_settings('mixed-reference', training_games,
                                  mixed_version=mixed_version)
@@ -97,26 +97,39 @@ def mixed_reference_scenarios(seed, generation, population_size=256,
             seat_start = (generation * candidate_count + trial * (worms // 2)) % worms
             candidate_seats = [(seat_start + offset) % worms
                                for offset in range(candidate_count)]
-        else:
+        elif version == 4:
             # Four consecutive four-seat blocks cover every worm seat once.
             # The generation offset prevents candidates from keeping identical
             # seats when a later generation reuses the same genome IDs.
             seat_start = (generation * candidate_count + trial * candidate_count) % worms
             candidate_seats = [(seat_start + offset) % worms
                                for offset in range(candidate_count)]
-        for arena in range(maps):
-            group_start = arena * candidate_count
-            group = ordered[group_start:group_start + candidate_count]
-            assignment[arena, candidate_seats] = group
+        else:
+            # One candidate per map. Shuffling changes map order per generation;
+            # candidate-list index plus generation rotates each candidate's
+            # seat, with exactly population_size / worms in every seat.
+            candidate_seats = None
+            for arena, candidate_index in enumerate(ordered):
+                seat = (candidate_index + generation) % worms
+                assignment[arena, seat] = candidate_index
+        if version != 5:
+            for arena in range(maps):
+                group_start = arena * candidate_count
+                group = ordered[group_start:group_start + candidate_count]
+                assignment[arena, candidate_seats] = group
         flat = assignment.reshape(-1).tolist()
         candidates = [index for index in flat if index >= 0]
         if sorted(candidates) != list(range(population_size)):
             raise RuntimeError('Mixed-reference matchmaking must assign every candidate exactly once')
-        games.append(dict(
-            seed=seed + 30_000_019 + generation * 1_000_003 + trial * 200_003,
-            trial=trial, candidate_seats=candidate_seats, reference_seats=[s for s in range(worms)
-                                                                           if s not in candidate_seats],
-            assignment=flat))
+        scenario = dict(seed=seed + 30_000_019 + generation * 1_000_003 + trial * 200_003,
+                        trial=trial, assignment=flat)
+        if version == 5:
+            scenario['seat_counts'] = np.count_nonzero(assignment >= 0, axis=0).tolist()
+        else:
+            scenario.update(candidate_seats=candidate_seats,
+                            reference_seats=[s for s in range(worms)
+                                             if s not in candidate_seats])
+        games.append(scenario)
     return games
 
 
@@ -201,8 +214,8 @@ def validate_mixed_reference_layout(config, population_size, training_games,
             or config.worms != protocol['worms_per_map']
             or training_games != protocol['games_per_genome']
             or validation_every != protocol['validation_every']
-            or (version in (3, 4) and config.sensor_chunk != protocol['sensor_chunk'])):
-        chunk_requirement = ', sensor_chunk=8' if version in (3, 4) else ''
+            or (version in (3, 4, 5) and config.sensor_chunk != protocol['sensor_chunk'])):
+        chunk_requirement = ', sensor_chunk=8' if version in (3, 4, 5) else ''
         raise ValueError(
             f"Mixed-reference v{version} requires population={protocol['population']}, "
             f"maps={protocol['maps_per_game']}, worms={protocol['worms_per_map']}, "
@@ -844,11 +857,11 @@ def main():
     p.add_argument('--device', choices=['auto', 'cpu', 'cuda'], default='auto')
     p.add_argument('--sensor-version', choices=['legacy-v1', 'export-v1'])
     p.add_argument('--sensor-chunk', type=int, choices=[4, 8, 16],
-                   help='raycast batch size; mixed-reference v3/v4 use 8, omitted on resume inherits saved settings')
+                   help='raycast batch size; mixed-reference v3/v4/v5 use 8, omitted on resume inherits saved settings')
     p.add_argument('--opponent-mode', choices=['reference', 'selfplay', 'mixed-reference'],
                    help='selection opponents: fixed focal, full self-play, or versioned mixed NEAT/reference')
     p.add_argument('--training-games', type=int,
-                   help='games per genome; reference uses 5 and new mixed-reference runs use 4')
+                   help='games per genome; reference uses 5; mixed-reference 1 selects v5, 2 v3, or 4 v4')
     p.add_argument('--seed', type=int, default=1)
     p.add_argument('--validation-every', type=int, default=5)
     start_from = p.add_mutually_exclusive_group()
@@ -862,15 +875,16 @@ def main():
     opponent_mode = (args.opponent_mode or resume_settings.get('opponent_mode')
                      or saved_protocol.get('opponent_mode') or 'reference')
     saved_config = resume_settings.get('config', {})
-    default_maps = saved_config.get('maps', 64) if args.resume else 64
-    maps = args.maps if args.maps is not None else default_maps
-    seconds = args.seconds
     default_training_games = (resume_settings.get(
         'training_games', saved_protocol.get('games_per_genome',
                                              4 if opponent_mode == 'mixed-reference' else 5))
         if args.resume else 4 if opponent_mode == 'mixed-reference' else 5)
     training_games = (args.training_games if args.training_games is not None else
                       default_training_games)
+    default_maps = saved_config.get('maps', 64) if args.resume else (
+        256 if opponent_mode == 'mixed-reference' and training_games == 1 else 64)
+    maps = args.maps if args.maps is not None else default_maps
+    seconds = args.seconds
     sensor_chunk = (args.sensor_chunk if args.sensor_chunk is not None else
                     saved_config.get('sensor_chunk', 4) if args.resume else
                     8 if opponent_mode == 'mixed-reference' else 4)

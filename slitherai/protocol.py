@@ -6,7 +6,8 @@ SELFPLAY_STAGNATION_DELTA = .02
 MIXED_REFERENCE_PROTOCOL_V1 = 'mixed-reference-v1'
 MIXED_REFERENCE_PROTOCOL_V2 = 'mixed-reference-v2'
 MIXED_REFERENCE_PROTOCOL_V3 = 'mixed-reference-v3'
-MIXED_REFERENCE_PROTOCOL = 'mixed-reference-v4'
+MIXED_REFERENCE_PROTOCOL_V4 = 'mixed-reference-v4'
+MIXED_REFERENCE_PROTOCOL = 'mixed-reference-v5'
 
 
 def protocol_settings(opponent_mode='reference', training_games=5, selfplay_version=None,
@@ -46,34 +47,39 @@ def protocol_settings(opponent_mode='reference', training_games=5, selfplay_vers
                     validation_maps=32, validation_seconds=90)
     if opponent_mode == 'mixed-reference':
         if mixed_version is None:
-            version = {2: 3, 4: 4}.get(training_games)
+            version = {1: 5, 2: 3, 4: 4}.get(training_games)
             if version is None:
-                raise ValueError('Mixed-reference requires exactly two or four training games')
+                raise ValueError('Mixed-reference requires exactly one, two or four training games')
         else:
             version = mixed_version
-        if version not in (1, 2, 3, 4):
+        if version not in (1, 2, 3, 4, 5):
             raise ValueError(f'Unsupported mixed-reference protocol version: {version}')
-        expected_games = 4 if version == 4 else 2
+        expected_games = {4: 4, 5: 1}.get(version, 2)
         if training_games != expected_games:
             raise ValueError(f'Mixed-reference v{version} requires exactly {expected_games} training games')
         is_v4 = version == 4
+        is_v5 = version == 5
         return dict(version=({1: MIXED_REFERENCE_PROTOCOL_V1,
                               2: MIXED_REFERENCE_PROTOCOL_V2,
                               3: MIXED_REFERENCE_PROTOCOL_V3,
-                              4: MIXED_REFERENCE_PROTOCOL}[version]),
+                              4: MIXED_REFERENCE_PROTOCOL_V4,
+                              5: MIXED_REFERENCE_PROTOCOL}[version]),
                     opponent_mode='mixed-reference', population=256,
-                    maps_per_game=(64 if version in (3, 4) else 32), worms_per_map=16,
-                    candidate_slots_per_map=(4 if version in (3, 4) else 8),
-                    reference_slots_per_map=(12 if version in (3, 4) else 8),
+                    maps_per_game=(256 if is_v5 else 64 if version in (3, 4) else 32), worms_per_map=16,
+                    candidate_slots_per_map=(1 if is_v5 else 4 if version in (3, 4) else 8),
+                    reference_slots_per_map=(15 if is_v5 else 12 if version in (3, 4) else 8),
                     games_per_genome=expected_games, seconds_per_game=(45 if version == 1 else 90),
-                    aggregate=('arithmetic_mean_four_games' if is_v4
+                    aggregate=('single_game_score' if is_v5 else
+                               'arithmetic_mean_four_games' if is_v4
                                else 'arithmetic_mean_two_games'),
                     opponents='fixed_heuristic_policy',
-                    matchmaking=('cohort_shuffle_four_block_sixteen_seat_rotation_v1'
+                    matchmaking=('seeded_genome_shuffle_generation_seat_rotation_v1'
+                                 if is_v5 else
+                                 'cohort_shuffle_four_block_sixteen_seat_rotation_v1'
                                  if is_v4 else
                                  'cohort_shuffle_four_seat_generation_rotation_v1'
                                  if version == 3 else 'cohort_shuffle_eight_seat_rotation_v1'),
-                    **({'sensor_chunk': 8} if version in (3, 4) else {}),
+                    **({'sensor_chunk': 8} if version in (3, 4, 5) else {}),
                     stagnation_metric='within_generation_midrank_percentile',
                     stagnation_window=SELFPLAY_STAGNATION_WINDOW,
                     stagnation_delta=SELFPLAY_STAGNATION_DELTA,
@@ -98,8 +104,8 @@ def recognized_protocol(saved):
             pass
     if isinstance(saved, dict) and saved.get('opponent_mode') == 'mixed-reference':
         try:
-            for version in (1, 2, 3, 4):
-                games = 4 if version == 4 else 2
+            for version in (1, 2, 3, 4, 5):
+                games = {4: 4, 5: 1}.get(version, 2)
                 if saved == protocol_settings('mixed-reference', games, mixed_version=version):
                     return 'mixed-reference', games
         except ValueError:
@@ -123,9 +129,9 @@ def selfplay_protocol_version(saved):
 
 def mixed_reference_protocol_version(saved):
     """Return the exact supported mixed-reference version, else None."""
-    for version in (1, 2, 3, 4):
+    for version in (1, 2, 3, 4, 5):
         try:
-            games = 4 if version == 4 else 2
+            games = {4: 4, 5: 1}.get(version, 2)
             if saved == protocol_settings('mixed-reference', games, mixed_version=version):
                 return version
         except ValueError:

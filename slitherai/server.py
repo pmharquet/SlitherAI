@@ -23,7 +23,7 @@ process = None
 current = None
 
 class StartOptions(BaseModel):
-    maps: int = Field(default=64, ge=1, le=64)
+    maps: int = Field(default=64, ge=1, le=256)
     worms: int = Field(default=16, ge=2, le=64)
     population: int = Field(default=256, ge=4, le=4096)
     generations: int = Field(default=50, ge=1, le=10000)
@@ -38,7 +38,7 @@ class StartOptions(BaseModel):
 class Control(BaseModel):
     pause: bool | None = None
     stop: bool | None = None
-    arena: int | None = Field(default=None, ge=0, le=63)
+    arena: int | None = Field(default=None, ge=0, le=255)
     network_worm: int | None = Field(default=None, ge=-1, le=63)
 
 def run_dir():
@@ -204,7 +204,8 @@ def start(options: StartOptions):
         mode = options.opponent_mode or 'reference'
         games = (options.training_games if options.training_games is not None else
                  4 if mode == 'mixed-reference' else 5)
-        maps = (64 if mode == 'mixed-reference' and 'maps' not in options.model_fields_set
+        maps_default = (256 if mode == 'mixed-reference' and games == 1 else 64)
+        maps = (maps_default if mode == 'mixed-reference' and 'maps' not in options.model_fields_set
                 else options.maps)
         seconds = (90 if mode == 'mixed-reference' and 'seconds' not in options.model_fields_set
                    else options.seconds)
@@ -216,9 +217,12 @@ def start(options: StartOptions):
             raise fastapi.HTTPException(400, str(exc)) from exc
         if mode == 'selfplay' and options.maps * options.worms != options.population:
             raise fastapi.HTTPException(400, 'Self-play exige maps × worms = population (256 génomes, 16 vers : 16 cartes).')
-        if mode == 'mixed-reference' and (options.population != 256 or maps != 64
+        expected_maps = 256 if games == 1 else 64
+        expected_mix = ('1 candidat, 15 références' if games == 1
+                        else '4 candidats, 12 références')
+        if mode == 'mixed-reference' and (options.population != 256 or maps != expected_maps
                 or options.worms != 16 or seconds != 90 or sensor_chunk != 8):
-            raise fastapi.HTTPException(400, 'Mixed-reference v3/v4 exige 256 génomes, 64 cartes, 16 vers, 4 candidats, 12 références, des parties de 90 secondes et sensor_chunk=8.')
+            raise fastapi.HTTPException(400, f'Mixed-reference v5 exige 256 génomes et cartes, 16 vers, {expected_mix}, des parties de 90 secondes et sensor_chunk=8.' if games == 1 else 'Mixed-reference v3/v4 exige 256 génomes, 64 cartes, 16 vers, 4 candidats, 12 références, des parties de 90 secondes et sensor_chunk=8.')
         run = RUNS / datetime.now().strftime('%Y%m%d-%H%M%S-%f')
         run.mkdir(parents=True)
         command += ['--maps', str(maps), '--worms', str(options.worms), '--population', str(options.population),

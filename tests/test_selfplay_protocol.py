@@ -65,8 +65,20 @@ def test_mixed_reference_protocol_is_versioned_and_strict():
     assert v1['seconds_per_game'] == 45
     assert saved_protocol_options({'protocol': v1}) == ('mixed-reference', 2)
     assert mixed_reference_protocol_version(v1) == 1
-    with pytest.raises(ValueError, match='exactly two'):
-        protocol_settings('mixed-reference', 1)
+    v5 = protocol_settings('mixed-reference', 1)
+    assert v5['version'] == 'mixed-reference-v5'
+    assert v5['population'] == 256
+    assert v5['maps_per_game'] == 256 and v5['worms_per_map'] == 16
+    assert v5['candidate_slots_per_map'] == 1 and v5['reference_slots_per_map'] == 15
+    assert v5['games_per_genome'] == 1 and v5['seconds_per_game'] == 90
+    assert v5['sensor_chunk'] == 8
+    assert v5['aggregate'] == 'single_game_score'
+    assert v5['stagnation_metric'] == 'within_generation_midrank_percentile'
+    assert v5['validation_maps'] == 32 and v5['validation_seconds'] == 90
+    assert v5['validation_every'] == 5
+    assert saved_protocol_options({'protocol': v5}) == ('mixed-reference', 1)
+    assert mixed_reference_protocol_version(v5) == 5
+    assert recognized_protocol(v5) == ('mixed-reference', 1)
 
 
 def test_mixed_reference_v4_uses_four_games_and_preserves_v3_record():
@@ -134,9 +146,34 @@ def test_server_starts_new_mixed_reference_with_v4_defaults(tmp_path, monkeypatc
     assert command[command.index('--training-games') + 1] == '4'
 
 
+def test_server_starts_new_mixed_reference_v5_with_256_map_default(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, 'process', None)
+    monkeypatch.setattr(server, 'RUNS', tmp_path)
+    captured = {}
+
+    class RunningProcess:
+        @staticmethod
+        def poll():
+            return None
+
+    def fake_popen(command, **kwargs):
+        captured['command'] = command
+        return RunningProcess()
+
+    monkeypatch.setattr(server.subprocess, 'Popen', fake_popen)
+    result = server.start(server.StartOptions(opponent_mode='mixed-reference', training_games=1))
+    command = captured['command']
+    assert result['started'] is True
+    assert command[command.index('--maps') + 1] == '256'
+    assert command[command.index('--training-games') + 1] == '1'
+    assert command[command.index('--sensor-chunk') + 1] == '8'
+    assert command[command.index('--seconds') + 1] == '90'
+
+
 @pytest.mark.parametrize(('version', 'games', 'maps', 'chunk', 'duration'),
                          [(1, 2, 32, 4, 45), (2, 2, 32, 4, 90),
-                          (3, 2, 64, 8, 90), (4, 4, 64, 8, 90)])
+                          (3, 2, 64, 8, 90), (4, 4, 64, 8, 90),
+                          (5, 1, 256, 8, 90)])
 def test_server_resume_preserves_mixed_protocol_version(
         tmp_path, monkeypatch, version, games, maps, chunk, duration):
     import dataclasses
@@ -174,7 +211,7 @@ def test_server_resume_preserves_mixed_protocol_version(
     assert command[command.index('--opponent-mode') + 1] == 'mixed-reference'
 
 
-@pytest.mark.parametrize(('version', 'games'), [(1, 2), (2, 2), (3, 2), (4, 4)])
+@pytest.mark.parametrize(('version', 'games'), [(1, 2), (2, 2), (3, 2), (4, 4), (5, 1)])
 def test_all_mixed_protocol_versions_are_recognized(version, games):
     protocol = protocol_settings('mixed-reference', games, mixed_version=version)
     assert recognized_protocol(protocol) == ('mixed-reference', games)

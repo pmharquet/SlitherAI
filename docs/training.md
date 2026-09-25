@@ -56,6 +56,10 @@ Le protocole **common-reference-v2** évalue chaque génome seul face à 15 adve
 
 Le score fixe vaut `0,5 × moyenne + 0,5 × médiane` des quatre parties fixes. La sélection utilise `0,8 × score fixe + 0,2 × score du scénario renouvelé`. La stagnation des espèces utilise seulement les scores fixes. Une génération coûte davantage de calcul qu'avec l'ancien protocole ; la barre de progression indique les scénarios, les lots et les épisodes terminés.
 
+Le protocole expérimental **mixed-reference-v5** garde la population de 256 génomes et oppose chaque génome dans une partie de 90 secondes sur l'une de **256 cartes**, avec 16 vers par carte : exactement un candidat NEAT et 15 contrôleurs heuristiques. Chaque génome joue une fois par génération. Le mélange des génomes sur les cartes dépend de la graine et de la génération ; son siège tourne d'un cran à chaque génération. Les 16 sièges reçoivent ainsi 16 candidats chacun. Le capteur utilise `sensor_chunk=8`. La sélection utilise le score de cette partie ; la stagnation compare les rangs médians au sein de la génération. Le capteur, les observations et la récompense `growth-v2` restent identiques.
+
+La validation v5 garde les **32 cartes fixes pendant 90 secondes**, au premier génome évalué puis toutes les cinq générations (G1, G5, G10 pour un run de dix générations). Elle utilise les mêmes procédures de validation et de référence que les autres protocoles.
+
 À la première génération puis toutes les cinq générations, le meilleur réseau de sélection est évalué sur **32 arènes fixes pendant 90 secondes**, avec des graines distinctes de l'entraînement. Deux références, collecte/évitement et déplacement en cercle, passent cette même épreuve. `best-validation.pkl` conserve le meilleur résultat moyen. Cette épreuve sert à sélectionner un modèle : elle n'est pas un test final indépendant et ne prouve pas le transfert au jeu original.
 
 ## Espèces et indicateurs
@@ -83,7 +87,7 @@ Chaque session est stockée sous `runs/<date-heure>/` :
 - `initialization.json` (runs initialisés depuis un checkpoint) : provenance du checkpoint source et règles de remise à zéro. La population et ses gènes sont importés, les fitness/ancrages/comportements sont effacés, et les espèces sont recréées en génération zéro. L'historique, les épisodes, les baselines et la validation du run source ne sont pas copiés.
 - `champion.pkl` : meilleur réseau de la dernière génération évaluée ; `champion-network.json` expose sa topologie.
 - `best-validation.pkl` : meilleur réseau sur l'épreuve fixe, avec son résultat dans `best-validation.json`.
-- `episodes/generation-NNNN.json` : résultats individuels des cinq parties de chaque génome, scénarios, scores fixes et scores de sélection.
+- `episodes/generation-NNNN.json` : résultats individuels des parties de chaque génome, scénarios, scores fixes et scores de sélection.
 - `validation/` et `baselines.json` : résultats détaillés par arène des validations et des stratégies de référence.
 - `history.jsonl`, `settings.json`, `schema.json`, `status.json` et `console.log` : métriques, paramètres et diagnostic.
 
@@ -102,6 +106,12 @@ En ligne de commande :
 ```
 
 Pour un nouveau run explicitement aligné sur la géométrie propre exportée, en important une population précédente :
+
+Pour lancer dix générations expérimentales depuis `checkpoint-44` avec mixed-reference-v5 :
+
+```powershell
+.\.venv\Scripts\python.exe -m slitherai.train --run runs/mixed-reference-v5-cp44-10gen --initialize-from runs/20260924-163112-852097/checkpoint-44 --opponent-mode mixed-reference --training-games 1 --maps 256 --worms 16 --population 256 --generations 10 --seconds 90 --seed 1 --validation-every 5 --sensor-chunk 8 --device cuda
+```
 
 ```powershell
 .\.venv\Scripts\python.exe -m slitherai.train --run runs/warmstart-export --initialize-from runs/experience/checkpoint-72 --maps 64 --worms 16 --population 256 --generations 50 --seconds 90 --device cuda --sensor-version export-v1 --sensor-chunk 8
