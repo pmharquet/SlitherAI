@@ -38,13 +38,25 @@ def heuristic(observations):
 def episode_metrics(world, focal):
     rows = torch.arange(world.c.maps, device=world.device)
     def take(values): return values[rows, focal].float()
+    values = _episode_metric_values(world)
+    array = torch.stack([take(value) for value in values.values()], -1).cpu().numpy()
+    return {key:array[:, i].tolist() for i,key in enumerate(values)}
+
+
+def _episode_metric_values(world):
     values = dict(fitness=world.fitness(), food_gain=world.gained, boost_spent=world.spent,
                   alive=world.alive, age=world.age, kills=world.kills,
                   border_death=world.border_deaths, collision_death=world.collision_deaths,
                   boost_fraction=world.boost_steps/world.decisions.clamp_min(1),
                   turn_degrees=world.turn_sum/world.decisions.clamp_min(1)*(180/math.pi))
     values.update({f'reward_{key}':value for key,value in world.fitness_terms().items()})
-    array = torch.stack([take(value) for value in values.values()], -1).cpu().numpy()
+    return values
+
+
+def population_episode_metrics(world):
+    """Return one metric value per map/worm cell, in map-major order."""
+    values = _episode_metric_values(world)
+    array = torch.stack([value.float().reshape(-1) for value in values.values()], -1).cpu().numpy()
     return {key:array[:, i].tolist() for i,key in enumerate(values)}
 
 
@@ -77,6 +89,75 @@ def play_episode(genomes, neat_config, config, device, seed, focal, seconds,
     if on_tick: on_tick(world, network, inputs, focal, step)
     if controls: controls()
     return episode_metrics(world, focal)
+
+
+@torch.inference_mode()
+def play_population_episode(genomes, neat_config, config, device, seed, assignment, seconds,
+                            shared_random=True, on_tick=None, controls=None):
+    """Run one arena batch where every map/worm cell is controlled by a NEAT genome.
+
+    This is the population/self-play path; it does not alter the
+    anchor/rotating-game behavior of :func:`play_episode`.
+    ``assignment`` contains one genome-list index per cell in map-major/worm-minor
+    order. Results use that same flattened order. ``on_tick`` follows the live
+    preview callback contract: ``(world, network, observations_flat, assignment,
+    step)``. ``observations_flat`` has shape ``(maps * worms, inputs)`` and the
+    assignment vector is exactly the one used to build the batched network.
+    """
+    if not genomes:
+        raise ValueError('At least one NEAT genome is required')
+    config.validate()
+    try:
+        assignment_values = list(assignment)
+    except TypeError as exc:
+        raise ValueError('assignment must be a one-dimensional integer vector') from exc
+    try:
+        assignment_array = np.asarray(assignment_values)
+    except (TypeError, ValueError) as exc:
+        raise ValueError('assignment must be a one-dimensional integer vector') from exc
+    if assignment_array.ndim != 1:
+        raise ValueError('assignment must be a one-dimensional integer vector')
+    slots = config.maps * config.worms
+    if len(assignment_values) != slots:
+        raise ValueError(f'assignment must contain one index per map/worm cell ({slots})')
+    if (assignment_array.dtype.kind not in ('i', 'u')
+            or any(isinstance(index, (bool, np.bool_)) for index in assignment_values)):
+        raise ValueError('assignment entries must be integer genome indices')
+    if np.any(assignment_array < 0) or np.any(assignment_array >= len(genomes)):
+        raise ValueError('assignment indices must refer to an existing genome')
+    assignment_values = assignment_array.astype(np.int64, copy=False)
+    try:
+        seconds = float(seconds)
+    except (TypeError, ValueError) as exc:
+        raise ValueError('seconds must be finite and positive') from exc
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise ValueError('seconds must be finite and positive')
+    steps = round(seconds / config.dt)
+    if steps < 1:
+        raise ValueError('seconds must include at least one simulation step')
+
+    world = WorldBatch(config, device, seed, shared_random=shared_random)
+    network = BatchedNetwork(genomes, neat_config, assignment=assignment_values, device=device)
+    published = -math.inf
+    observations_flat = None
+    for step in range(steps):
+        observations_flat = world.observe().reshape(slots, -1)
+        actions = network.activate(observations_flat)
+        world.step(actions)
+        now = time.perf_counter()
+        if now - published > 1.:
+            if controls:
+                controls()
+            if on_tick:
+                on_tick(world, network, observations_flat, network.assignment, step)
+            published = now
+        if not bool(world.alive.any()):
+            break
+    if on_tick:
+        on_tick(world, network, observations_flat, network.assignment, step)
+    if controls:
+        controls()
+    return population_episode_metrics(world)
 
 
 def fixed_validation(genome, neat_config, config, device, seconds=90., controls=None, maps=32, policy='neat'):

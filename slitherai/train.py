@@ -17,11 +17,70 @@ from .network import BatchedNetwork, load_config
 from .schema import contract, sensor_version_from_schema
 from .sim import WorldBatch
 from .species_metrics import SpeciesReporter
-from .evaluation import PROTOCOL, protocol_settings, scenarios, aggregate_scores, play_episode, heuristic, fixed_validation
+from .evaluation import (PROTOCOL, protocol_settings, scenarios, aggregate_scores,
+                         play_episode, play_population_episode, heuristic, fixed_validation)
 from .rewards import REWARD_VERSION
 from .warmstart import initialize_from_checkpoint
 
 class Cancelled(Exception): pass
+
+
+def selfplay_scenarios(seed, generation, population_size, worms, training_games):
+    """Build deterministic balanced cohorts and rotate every genome's seat.
+
+    Each game uses one candidate in every arena slot. Cohorts are remixed by
+    independently shuffling each base-seat group; rotating the seat mapping
+    guarantees distinct worm slots for every candidate across the requested
+    games (which the protocol bounds to at most ``worms``).
+    """
+    if population_size < 1 or worms < 1 or population_size % worms:
+        raise ValueError('Self-play population must be divisible by worms')
+    if not 1 <= training_games <= worms:
+        raise ValueError('Self-play training_games must be between 1 and worms')
+    maps = population_size // worms
+    partition_rng = random.Random(seed + generation * 1_000_003 + 0x51F1)
+    ordered = list(range(population_size))
+    partition_rng.shuffle(ordered)
+    base_seats = [ordered[seat::worms] for seat in range(worms)]
+
+    games = []
+    for trial in range(training_games):
+        rng = random.Random(seed + generation * 10_000_019 + trial * 200_003 + 0xBEEF)
+        groups = [members.copy() for members in base_seats]
+        for members in groups:
+            rng.shuffle(members)
+        assignment = np.full((maps, worms), -1, dtype=np.int64)
+        for base_seat, members in enumerate(groups):
+            seat = (base_seat + trial) % worms
+            assignment[:, seat] = members
+        if np.any(assignment < 0):
+            raise RuntimeError('Self-play matchmaking did not fill every arena slot')
+        games.append(dict(
+            seed=seed + 10_000_019 + generation * 1_000_003 + trial * 200_003,
+            trial=trial, anchor=False,
+            assignment=assignment.reshape(-1).tolist()))
+    return games
+
+
+def aggregate_selfplay_scores(game_scores):
+    """Aggregate each candidate's co-evolution games using the v1 formula."""
+    scores = np.asarray(game_scores, dtype=np.float64)
+    if scores.ndim != 2 or scores.shape[1] < 1 or not np.isfinite(scores).all():
+        raise ValueError('Expected a non-empty finite genome-by-game score matrix')
+    mean = scores.mean(axis=1)
+    median = np.median(scores, axis=1)
+    return .5 * mean + .5 * median
+
+
+def validate_selfplay_layout(config, population_size, training_games):
+    if population_size < 1 or population_size % config.worms:
+        raise ValueError('Self-play population must be divisible by worms')
+    if not 1 <= training_games <= config.worms:
+        raise ValueError('Self-play training_games must be between 1 and worms')
+    expected_maps = population_size // config.worms
+    if config.maps != expected_maps:
+        raise ValueError(f'Self-play requires maps=population/worms ({expected_maps}); got {config.maps}')
+    return expected_maps
 
 
 def _saved_sensor_version(run, saved_config):
@@ -115,7 +174,8 @@ class TrainingReporter(neat.reporting.BaseReporter):
         print(json.dumps(row), flush=True)
 
 class Trainer:
-    def __init__(self, config, run, device='auto', seed=1, validation_every=5):
+    def __init__(self, config, run, device='auto', seed=1, validation_every=5,
+                 opponent_mode='reference', training_games=5):
         self.config = config.validate()
         self.run = Path(run).resolve()
         self.run.mkdir(parents=True, exist_ok=True)
@@ -123,6 +183,7 @@ class Trainer:
         if self.device == 'cuda' and not torch.cuda.is_available(): raise RuntimeError('CUDA unavailable')
         torch.set_num_threads(4)
         self.seed, self.validation_every = seed, validation_every
+        self.opponent_mode, self.training_games = opponent_mode, training_games
         self.generation = 0
         self.last_metrics = None
         self.last_preview = 0
@@ -182,7 +243,10 @@ class Trainer:
                      inputs=530, outputs=2, sensor_version=self.config.sensor_version,
                      schema=contract(self.config.sensor_version),
                      config=dataclasses.asdict(self.config), last_metrics=self.last_metrics,
-                     run=str(self.run), protocol=protocol_settings(), progress=self.progress, **extra)
+                     run=str(self.run),
+                     protocol=protocol_settings(self.opponent_mode, self.training_games),
+                     opponent_mode=self.opponent_mode, training_games=self.training_games,
+                     progress=self.progress, **extra)
         write_json(self.run / 'status.json', state)
 
     def save_genome(self, genome, config, name):
@@ -210,6 +274,8 @@ class Trainer:
         return state
 
     def evaluate(self, genomes, neat_config):
+        if self.opponent_mode == 'selfplay':
+            return self._evaluate_selfplay(genomes, neat_config)
         self.generation_started = time.perf_counter()
         games = scenarios(self.seed, self.generation, self.config.worms)
         total_batches = math.ceil(len(genomes)/self.config.maps)
@@ -255,6 +321,87 @@ class Trainer:
                         score=scores.tolist(), anchor_score=anchors.tolist(),
                         metrics={key:value.tolist() for key,value in values.items()}))
 
+    def _evaluate_selfplay(self, genomes, neat_config):
+        self.generation_started = time.perf_counter()
+        population_size = len(genomes)
+        worms = self.config.worms
+        maps = validate_selfplay_layout(self.config, population_size, self.training_games)
+        games = selfplay_scenarios(self.seed, self.generation, population_size,
+                                   worms, self.training_games)
+        game_scores = np.zeros((population_size, self.training_games), dtype=np.float64)
+        values = {}
+        agent_steps = 0
+
+        for trial, scenario in enumerate(games):
+            self.controls()
+            assignment = np.asarray(scenario['assignment'], dtype=np.int64)
+            c = dataclasses.replace(self.config, maps=maps)
+            self.progress = dict(game=trial + 1, games=self.training_games,
+                batch=1, batches=1, anchor=False, completed_episodes=trial * population_size,
+                total_episodes=population_size * self.training_games,
+                candidates=population_size, arenas=maps, worms_per_arena=worms)
+            self.status('training', episode_seconds=0)
+            episode_steps = [0]
+
+            def tick(world, network, observations, slot_assignment, step):
+                self.live_world, self.live_network = world, network
+                self.live_observations = observations
+                self.live_assignment = np.asarray(slot_assignment, dtype=np.int64)
+                self.live_focal = None
+                episode_steps[0] = int(world.steps)
+                self.publish_preview(self.controls())
+                alive = int(world.alive.sum())
+                self.status('training', episode_seconds=round(world.elapsed, 1),
+                    agent_steps_per_second=round((agent_steps + c.maps*c.worms*episode_steps[0]) /
+                                                  max(.001, time.perf_counter()-self.generation_started), 1),
+                    alive=alive, candidates_alive=alive,
+                    gpu_memory_mb=round(torch.cuda.memory_allocated()/1e6) if self.device == 'cuda' else None)
+
+            result = play_population_episode(
+                [genome for _, genome in genomes], neat_config, c, self.device,
+                seed=scenario['seed'], assignment=assignment, seconds=self.episode_seconds,
+                shared_random=True, on_tick=tick, controls=self.controls)
+            agent_steps += episode_steps[0] * maps * worms
+            if len(np.unique(assignment)) != population_size:
+                raise RuntimeError('Each self-play genome must appear exactly once per game')
+            for key, outcomes in result.items():
+                outcome_array = np.asarray(outcomes, dtype=np.float64)
+                if outcome_array.shape != assignment.shape or not np.isfinite(outcome_array).all():
+                    raise RuntimeError(f'Self-play metric {key!r} must have one finite value per arena slot')
+                if key not in values:
+                    values[key] = np.zeros_like(game_scores)
+                values[key][assignment, trial] = outcome_array
+            if 'fitness' not in result:
+                raise RuntimeError('Self-play evaluation did not return fitness')
+            game_scores[assignment, trial] = np.asarray(result['fitness'], dtype=np.float64)
+
+        scores = aggregate_selfplay_scores(game_scores)
+        for index, (_, genome) in enumerate(genomes):
+            genome.fitness = float(scores[index])
+            # NEAT species stagnation currently reads this compatibility field.
+            # Self-play scores have no fixed-anchor interpretation.
+            genome.anchor_fitness = float(scores[index])
+            genome.behavior = {key:float(value[index].mean()) for key,value in values.items()}
+        self.evaluation_metrics = {key:float(value.mean()) for key,value in values.items()}
+        self.evaluation_metrics.update(
+            opponent_mode='selfplay', games_per_genome=self.training_games,
+            aggregation='half_mean_half_median_all_games', anchor_fitness=None,
+            anchor_fitness_compatibility_alias=float(scores.mean()),
+            episode_score_sd=float(game_scores.std(axis=1).mean()),
+            episodes=int(game_scores.size), arenas_per_game=maps,
+            selection_score=float(scores.mean()),
+            champion=genomes[int(scores.argmax())][1].behavior)
+        self.progress['completed_episodes'] = self.progress['total_episodes']
+        write_json(self.run / 'episodes' / f'generation-{self.generation:04d}.json',
+            dict(generation=self.generation, opponent_mode='selfplay',
+                 aggregation='half_mean_half_median_all_games',
+                 genome_ids=[key for key,_ in genomes],
+                 scenarios=[{key:value for key,value in game.items() if key != 'assignment'}
+                            for game in games],
+                 assignments=[game['assignment'] for game in games],
+                 score=scores.tolist(), game_scores=game_scores.tolist(),
+                 metrics={key:value.tolist() for key,value in values.items()}))
+
     def train(self, population=256, generations=50, seconds=90., resume=None,
               initialize_from=None, sensor_version_explicit=False,
               sensor_chunk_explicit=False):
@@ -262,6 +409,9 @@ class Trainer:
             raise ValueError('Invalid training limits')
         if resume and initialize_from:
             raise ValueError('--resume and --initialize-from are mutually exclusive')
+        protocol = protocol_settings(self.opponent_mode, self.training_games)
+        if self.opponent_mode == 'selfplay':
+            validate_selfplay_layout(self.config, population, self.training_games)
         self.population_size, self.generations, self.episode_seconds = population, generations, seconds
         random.seed(self.seed)
         np.random.seed(self.seed)
@@ -269,10 +419,12 @@ class Trainer:
             raise ValueError('This trainer requires growth-v2; preserve legacy runs and start a new session')
         if resume:
             settings = read_json(self.run / 'settings.json', {})
-            if settings.get('protocol') != protocol_settings():
+            if settings.get('protocol') != protocol:
                 raise ValueError('Evaluation protocol changed: start a new session instead of mixing fitness histories')
             pop = neat.Checkpointer.restore_checkpoint(str(resume))
             self.population_size = pop.config.pop_size
+            if self.opponent_mode == 'selfplay':
+                validate_selfplay_layout(self.config, self.population_size, self.training_games)
             settings = read_json(self.run / 'settings.json')
             saved_config = SimConfig.from_dict(settings['config']).validate()
             if sensor_chunk_explicit and self.config.sensor_chunk != saved_config.sensor_chunk:
@@ -304,6 +456,8 @@ class Trainer:
                 raise ValueError('Warm-start preserves the source population size; set --population to '
                                  f'{len(pop.population)}')
             self.population_size = len(pop.population)
+            if self.opponent_mode == 'selfplay':
+                validate_selfplay_layout(self.config, self.population_size, self.training_games)
         else:
             if (self.run / 'history.jsonl').exists(): raise ValueError('Run already exists; resume it or select a new directory')
             pop = neat.Population(load_config(population))
@@ -311,7 +465,11 @@ class Trainer:
         write_json(self.run / 'schema.json', contract(self.config.sensor_version))
         settings = dict(config=dataclasses.asdict(self.config), seed=self.seed, population=self.population_size,
                         generations=generations, seconds=seconds, validation_every=self.validation_every,
-                        device=self.device, protocol=protocol_settings())
+                        device=self.device, opponent_mode=self.opponent_mode,
+                        training_games=self.training_games,
+                        maps_per_game=(self.population_size // self.config.worms
+                                       if self.opponent_mode == 'selfplay' else self.config.maps),
+                        protocol=protocol)
         if initialize_from:
             initialization['destination_sensor_version'] = self.config.sensor_version
             write_json(self.run / 'initialization.json', initialization)
@@ -348,6 +506,10 @@ def main():
     p.add_argument('--sensor-version', choices=['legacy-v1', 'export-v1'])
     p.add_argument('--sensor-chunk', type=int, choices=[4, 8, 16],
                    help='raycast batch size; default 4, omitted on resume inherits saved settings')
+    p.add_argument('--opponent-mode', choices=['reference', 'selfplay'], default='reference',
+                   help='selection opponents; selfplay controls every worm in each arena')
+    p.add_argument('--training-games', type=int, default=5,
+                   help='games per genome in selfplay (1..worms); reference uses exactly 5')
     p.add_argument('--seed', type=int, default=1)
     p.add_argument('--validation-every', type=int, default=5)
     start_from = p.add_mutually_exclusive_group()
@@ -358,7 +520,11 @@ def main():
                        body_points=args.body_points, arena_radius=args.arena_radius,
                        sensor_chunk=args.sensor_chunk or 4,
                        sensor_version=args.sensor_version or 'legacy-v1')
-    trainer = Trainer(config, args.run, args.device, args.seed, args.validation_every)
+    if args.opponent_mode == 'reference' and args.training_games == 5:
+        trainer = Trainer(config, args.run, args.device, args.seed, args.validation_every)
+    else:
+        trainer = Trainer(config, args.run, args.device, args.seed, args.validation_every,
+                          opponent_mode=args.opponent_mode, training_games=args.training_games)
     trainer.train(args.population, args.generations, args.seconds, args.resume,
                   initialize_from=args.initialize_from,
                   sensor_version_explicit=args.sensor_version is not None,

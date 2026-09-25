@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from .io import read_json, write_json
-from .protocol import protocol_settings
+from .protocol import protocol_settings, recognized_protocol
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNS = ROOT / 'runs'
@@ -29,6 +29,8 @@ class StartOptions(BaseModel):
     device: str = 'auto'
     sensor_version: Literal['legacy-v1', 'export-v1'] | None = None
     sensor_chunk: Literal[4, 8, 16] | None = None
+    opponent_mode: Literal['reference', 'selfplay'] | None = None
+    training_games: int | None = Field(default=None, ge=1, le=16)
     resume: bool = False
 
 class Control(BaseModel):
@@ -49,6 +51,11 @@ def run_dir():
 
 def active(): return process is not None and process.poll() is None
 
+
+def saved_protocol_options(settings):
+    """Return a recognized run's selection mode and game count, if any."""
+    return recognized_protocol(settings.get('protocol'))
+
 @app.get('/')
 def index(): return FileResponse(ROOT / 'web' / 'index.html')
 
@@ -68,7 +75,7 @@ def state():
     if process is not None and process.poll() not in (None, 0) and run:
         log = run / 'console.log'
         error = log.read_text(encoding='utf-8', errors='replace')[-5000:] if log.exists() else 'Process failed'
-    compatible = bool(run and read_json(run / 'settings.json', {}).get('protocol') == protocol_settings())
+    compatible = bool(run and saved_protocol_options(read_json(run / 'settings.json', {})))
     return dict(active=active(), status=status, history=history[-500:],
                 species=read_json(run / 'species.json', {}) if run else {},
                 species_history=read_json(run / 'species-history.json', [])[-500:] if run else [],
@@ -94,8 +101,14 @@ def start(options: StartOptions):
         if not checkpoints: raise fastapi.HTTPException(404, 'Aucune sauvegarde.')
         settings = read_json(run / 'settings.json')
         if not settings: raise fastapi.HTTPException(404, 'Configuration de reprise manquante.')
-        if settings.get('protocol') != protocol_settings():
+        saved_options = saved_protocol_options(settings)
+        if saved_options is None:
             raise fastapi.HTTPException(400, 'Cette ancienne session utilise un autre barème. Démarrez une nouvelle session ; les anciennes sauvegardes restent conservées.')
+        saved_mode, saved_games = saved_options
+        if options.opponent_mode is not None and options.opponent_mode != saved_mode:
+            raise fastapi.HTTPException(400, 'Le mode d’adversaires demandé diffère de la sauvegarde.')
+        if options.training_games is not None and options.training_games != saved_games:
+            raise fastapi.HTTPException(400, 'Le nombre de parties par génome diffère de la sauvegarde.')
         cfg = settings['config']
         saved_sensor_version = cfg.get('sensor_version', 'legacy-v1')
         if options.sensor_version is not None and options.sensor_version != saved_sensor_version:
@@ -109,13 +122,25 @@ def start(options: StartOptions):
                     '--validation-every', str(settings['validation_every']),
                     '--sensor-version', str(saved_sensor_version),
                     '--sensor-chunk', str(saved_sensor_chunk)]
+        if saved_mode == 'selfplay':
+            command += ['--opponent-mode', saved_mode, '--training-games', str(saved_games)]
     else:
+        mode = options.opponent_mode or 'reference'
+        games = options.training_games or 5
+        try:
+            protocol_settings(mode, games)
+        except ValueError as exc:
+            raise fastapi.HTTPException(400, str(exc)) from exc
+        if mode == 'selfplay' and options.maps * options.worms != options.population:
+            raise fastapi.HTTPException(400, 'Self-play exige maps × worms = population (256 génomes, 16 vers : 16 cartes).')
         run = RUNS / datetime.now().strftime('%Y%m%d-%H%M%S-%f')
         run.mkdir(parents=True)
         command += ['--maps', str(options.maps), '--worms', str(options.worms), '--population', str(options.population),
                     '--seconds', str(options.seconds), '--sensor-version', options.sensor_version or 'legacy-v1']
         if options.sensor_chunk is not None:
             command += ['--sensor-chunk', str(options.sensor_chunk)]
+        if mode == 'selfplay':
+            command += ['--opponent-mode', mode, '--training-games', str(games)]
     current = run
     command += ['--run', str(run), '--generations', str(options.generations), '--device', options.device]
     write_json(run / 'control.json', dict(pause=False, stop=False, arena=0))

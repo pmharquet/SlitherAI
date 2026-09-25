@@ -15,6 +15,7 @@
     }
     update(state){
       const data=state.species||{},current=data.current,last=data.latest,params=data.parameters||{};
+      const protocol=state.status?.protocol,selfplay=protocol?.opponent_mode==='selfplay';
       this.history=state.species_history||[];
       const text=(id,value)=>this.panel.querySelector('#'+id).textContent=value;
       if(!current){text('species-stamp','Les détails apparaîtront à la prochaine génération.');return;}
@@ -27,15 +28,19 @@
       const champion=last?.rows.reduce((a,b)=>!a||b.best>a.best?b:a,null);
       text('species-champion',champion?`E${champion.id} · ${number(champion.best)}`:'—');
       text('species-champion-note',last?`Meilleure fitness · G${last.generation+1}`:'Dernière évaluation terminée');
-      text('species-rules',`${params.target_min?`Objectif ${params.target_min}–${params.target_max} espèces · `:''}Seuil génétique ${number(params.compatibility_threshold,3)} · ${params.progress_window?`moyenne fixe, fenêtres de ${params.progress_window} générations · `:''}stagnation ${params.max_stagnation} générations · ${params.species_elitism} espèces protégées · ${params.elitism} élites par espèce · parents : meilleurs ${number(params.survival_threshold*100)} % (au moins 2)`);
+      text('species-rules',`${params.target_min?`Objectif ${params.target_min}–${params.target_max} espèces · `:''}Seuil génétique ${number(params.compatibility_threshold,3)} · ${params.progress_window?`${selfplay?'score de sélection coévolutif':'moyenne fixe'}, fenêtres de ${params.progress_window} générations · `:''}stagnation ${params.max_stagnation} générations · ${params.species_elitism} espèces protégées · ${params.elitism} élites par espèce · parents : meilleurs ${number(params.survival_threshold*100)} % (au moins 2)`);
       const bar=this.panel.querySelector('#species-composition');bar.replaceChildren();
       const legend=this.panel.querySelector('#species-legend');legend.replaceChildren();
       for(const row of current.rows){
         const slice=document.createElement('span');slice.style.width=(row.size/current.population*100)+'%';slice.style.background=color(row.id);slice.title=`Espèce ${row.id} : ${row.size} réseaux`;bar.append(slice);
         const tag=document.createElement('span');tag.style.setProperty('--species-color',color(row.id));tag.textContent=`E${row.id} · ${row.size}`;legend.append(tag);
       }
-      const config=state.status?.config,protocol=state.status?.protocol,replicates=protocol?protocol.anchor_games+protocol.rotating_games:config?config.maps*config.worms/state.status.population:null;
-      text('species-table-stamp',last?`Évaluation G${last.generation+1}${replicates?` · ${replicates} parties par réseau${protocol?' · 80 % référence fixe + 20 % nouvelle carte':''}`:''}`:'En attente d’une évaluation complète');
+      const config=state.status?.config,replicates=selfplay?protocol.games_per_genome:protocol?protocol.anchor_games+protocol.rotating_games:config?config.maps*config.worms/state.status.population:null;
+      text('species-table-stamp',last?`Évaluation G${last.generation+1}${replicates?` · ${replicates} parties par réseau${selfplay?' · adversaires coévolutifs':protocol?' · 80 % référence fixe + 20 % nouvelle carte':''}`:''}`:'En attente d’une évaluation complète');
+      const anchorHeader=this.panel.querySelector('thead th:nth-child(11)');
+      anchorHeader.textContent=selfplay?'Score sélection':'Score fixe';
+      anchorHeader.title=selfplay?'Moyenne des scores de sélection coévolutifs, utilisée pour la stagnation':'Moyenne des scores agrégés sur les quatre parties fixes, utilisée pour la stagnation';
+      this.panel.querySelector('thead th:nth-child(9)').title=selfplay?'Générations sans progrès du score de sélection coévolutif':'Générations sans progrès entre fenêtres de cinq générations du score moyen sur les parties fixes';
       // Rebuild only after a generation ends; keep text selectable between updates.
       const signature=JSON.stringify(last);
       if(this.signature!==signature){

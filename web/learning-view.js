@@ -3,7 +3,9 @@ function updateLearning(state){
   const metrics=last.evaluation||{},format=(x,d=1)=>Number.isFinite(x)?x.toLocaleString('fr-FR',{maximumFractionDigits:d}):'—';
   const put=(id,text)=>document.getElementById(id).textContent=text;
   const percent=x=>Number.isFinite(x)?format(x*100)+' %':'—';
-  put('training-progress',progress.games?`Partie ${progress.game}/${progress.games} (${progress.anchor?'référence fixe':'nouvelle carte'}) · lot ${progress.batch}/${progress.batches} · ${progress.completed_episodes}/${progress.total_episodes} parties terminées`:'Préparation des parties comparables');
+  const selfplay=status.protocol?.opponent_mode==='selfplay';
+  const scenario=selfplay?'coévolution':progress.anchor?'référence fixe':'nouvelle carte';
+  put('training-progress',progress.games?`Partie ${progress.game}/${progress.games} (${scenario}) · lot ${progress.batch}/${progress.batches} · ${progress.completed_episodes}/${progress.total_episodes} évaluations terminées`:'Préparation des parties comparables');
   const bar=document.getElementById('training-progress-bar');bar.max=progress.total_episodes||1;bar.value=progress.completed_episodes||0;
   put('behavior-stamp',last.evaluation?`Moyennes de la population · G${last.generation+1}`:'Détails à la fin de la première génération');
   put('food-kpi',format(metrics.food_gain));put('survival-kpi',percent(metrics.alive));

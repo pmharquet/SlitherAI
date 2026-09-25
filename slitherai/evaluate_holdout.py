@@ -24,6 +24,7 @@ import torch
 
 from .config import SimConfig
 from .evaluation import play_episode, protocol_settings
+from .protocol import recognized_protocol
 from .rewards import REWARD_VERSION
 from .schema import contract, schema_id, sensor_version_from_schema
 
@@ -164,8 +165,8 @@ def _load_simulation_config(run: Path, comparison_path: Path | None, maps: int) 
     if run_sensor_version != saved_sim_config.sensor_version:
         raise ValueError("Run settings and observation schema disagree about sensor_version")
     if comparison_path is None:
-        if saved_protocol != protocol_settings():
-            raise ValueError("Saved protocol differs; provide --comparison-config to rescore every policy under one protocol")
+        if recognized_protocol(saved_protocol) is None:
+            raise ValueError("Saved training protocol is unsupported; provide --comparison-config to rescore every policy")
         sim_config = saved_sim_config
         if sim_config.reward_version != REWARD_VERSION:
             raise ValueError("Saved reward version differs; provide --comparison-config to rescore every policy")
@@ -186,6 +187,7 @@ def _load_simulation_config(run: Path, comparison_path: Path | None, maps: int) 
         "source": config_source, "config": dataclasses.asdict(sim_config),
         "config_sha256": _canonical_hash(dataclasses.asdict(sim_config)),
         "protocol": protocol_settings(), "protocol_sha256": _canonical_hash(protocol_settings()),
+        "training_protocol": saved_protocol, "training_protocol_sha256": _canonical_hash(saved_protocol),
         "reward_version": sim_config.reward_version,
         "reward_version_sha256": _canonical_hash(sim_config.reward_version),
         "schema_version": schema_id(sim_config.sensor_version),

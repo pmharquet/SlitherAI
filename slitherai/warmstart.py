@@ -15,7 +15,7 @@ from pathlib import Path
 import neat
 
 from .config import SimConfig
-from .protocol import protocol_settings
+from .protocol import recognized_protocol
 from .schema import INPUTS, OUTPUTS, contract, sensor_version_from_schema
 
 
@@ -126,8 +126,8 @@ def initialize_from_checkpoint(
         raise ValueError('Warm-start source schema is unsupported')
     if source_sensor_version != source_config.sensor_version:
         raise ValueError('Warm-start source settings and schema disagree about sensor_version')
-    if settings.get('protocol') != protocol_settings():
-        raise ValueError('Warm-start source evaluation protocol differs from the active protocol')
+    if recognized_protocol(settings.get('protocol')) is None:
+        raise ValueError('Warm-start source evaluation protocol differs from supported protocols')
     target_config.validate()
     _validate_simulation_compatibility(source_config, target_config)
     if source_config.reward_version != target_config.reward_version:
