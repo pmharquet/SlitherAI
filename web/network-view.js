@@ -126,8 +126,19 @@
     }
     resize(){const rect=this.canvas.getBoundingClientRect(),d=window.devicePixelRatio||1;this.canvas.width=Math.round(rect.width*d);this.canvas.height=Math.round(rect.height*d);this.width=rect.width;this.height=rect.height;this.dpr=d;}
     fit(){if(!this.graph)return;this.scale=Math.min(this.width/this.graph.width,this.height/this.graph.height)*.98;this.tx=(this.width-this.graph.width*this.scale)/2;this.ty=(this.height-this.graph.height*this.scale)/2;this.fitted=true;this.draw();}
+    clear(message='Aucune capture réseau disponible pour ce run.'){
+      this.data=null;this.graph=null;this.hover=null;this.wormSignature=null;this.fitted=false;
+      this.selector.replaceChildren(new Option('Aucun réseau capturé','-1'));this.selector.value='-1';
+      this.tooltip.hidden=true;
+      this.panel.querySelector('#network-status').textContent=message;
+      this.panel.querySelector('#network-boost').textContent='Boost —';
+      this.panel.querySelector('#network-direction').textContent='Direction —';
+      this.panel.querySelector('#network-time').textContent='Aucune capture réseau';
+      this.panel.querySelector('#network-counts').textContent='Aucune capture disponible pour ce run.';
+      this.draw();
+    }
     update(snapshot,state){
-      if(!snapshot)return;
+      if(!snapshot){this.clear(state.read_only?'Aucune capture réseau dans le run sélectionné.':'Aucune capture réseau disponible pour ce run.');return;}
       const selected=this.selector.value;
       const referenceGame=snapshot.worms.some(w=>w.controller==='reference');
       const signature=snapshot.worms.map(w=>`${w.id}:${w.alive}:${w.controller}`).join(',');
@@ -138,10 +149,13 @@
         this.selector.value=[...this.selector.options].some(o=>o.value===selected&&!o.disabled)?selected:'-1';
       }
       const data=snapshot.network;
-      if(!data){this.panel.querySelector('#network-status').textContent='En attente du premier état du réseau…';return;}
+      if(!data){this.clear(state.read_only?'Aucune capture réseau dans le run sélectionné.':'En attente du premier état du réseau…');return;}
       this.data=data;this.phase=state.status?.phase;
       const live=state.active && this.phase==='training' && data.alive && data.generation===state.status.generation;
-      this.panel.querySelector('#network-status').textContent=`${live?'En direct':this.phase==='paused'?'En pause':'Instantané'} · arène ${data.arena+1} · ver ${data.worm+1} · génome ${data.genome_id}${data.species_id!=null?` · espèce E${data.species_id}`:''} · génération ${data.generation+1}${data.alive?'':' · mort, sorties non appliquées'}`;
+      const processTracked=state.process_attached??snapshot.monitoring?.process_attached??state.active;
+      const captureAge=snapshot.monitoring?.preview_age_seconds;
+      const modeLabel=!processTracked?(captureAge==null||captureAge<=5?'Capture fraîche · processus non suivi':'Capture externe · processus non suivi'):live?'En direct':this.phase==='paused'?'En pause':'Instantané';
+      this.panel.querySelector('#network-status').textContent=`${modeLabel} · arène ${data.arena+1} · ver ${data.worm+1} · génome ${data.genome_id}${data.species_id!=null?` · espèce E${data.species_id}`:''} · génération ${data.generation+1}${data.alive?'':' · mort, sorties non appliquées'}`;
       const boost=data.nodes.find(n=>n.kind==='output'&&n.label==='Boost')?.value??0;
       const direction=data.nodes.find(n=>n.kind==='output'&&n.label==='Direction')?.value??0;
       this.panel.querySelector('#network-boost').textContent=`Boost ${boost>=.5?'ON':'OFF'} · ${boost.toFixed(3)}`;

@@ -1,8 +1,10 @@
 """Loopback-only dashboard. Opening it never launches training."""
 import argparse
 import atexit
+import math
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
@@ -52,6 +54,33 @@ def run_dir():
 def active(): return process is not None and process.poll() is None
 
 
+def resolve_run_id(run_id: str) -> Path:
+    """Resolve an explicit run basename without permitting traversal or symlink escape."""
+    if (not isinstance(run_id, str) or not run_id or run_id in ('.', '..')
+            or Path(run_id).name != run_id or '/' in run_id or '\\' in run_id or ':' in run_id):
+        raise fastapi.HTTPException(400, 'Identifiant de session invalide.')
+    runs_root = RUNS.resolve()
+    candidate = (RUNS / run_id).resolve()
+    if candidate.parent != runs_root:
+        raise fastapi.HTTPException(400, 'Identifiant de session invalide.')
+    if not candidate.is_dir():
+        raise fastapi.HTTPException(404, 'Session introuvable.')
+    if not (candidate / 'settings.json').is_file() or not (candidate / 'status.json').is_file():
+        raise fastapi.HTTPException(404, 'Session introuvable.')
+    return candidate
+
+
+def _attached_to(run: Path | None) -> bool:
+    return bool(run and active() and current and current.resolve() == run.resolve())
+
+
+def _file_age_seconds(path: Path) -> float | None:
+    try:
+        return max(0., time.time() - path.stat().st_mtime)
+    except OSError:
+        return None
+
+
 def saved_protocol_options(settings):
     """Return a recognized run's selection mode and game count, if any."""
     return recognized_protocol(settings.get('protocol'))
@@ -59,11 +88,47 @@ def saved_protocol_options(settings):
 @app.get('/')
 def index(): return FileResponse(ROOT / 'web' / 'index.html')
 
+@app.get('/api/runs')
+def runs():
+    """List local run folders for read-only dashboard selection."""
+    if not RUNS.is_dir():
+        return []
+    result = []
+    for child in RUNS.iterdir():
+        if child.is_symlink() or not child.is_dir():
+            continue
+        try:
+            run = resolve_run_id(child.name)
+        except fastapi.HTTPException:
+            continue
+        settings = read_json(run / 'settings.json', {})
+        status = read_json(run / 'status.json', {})
+        if not isinstance(settings, dict) or not settings or not isinstance(status, dict) or not status:
+            continue
+        protocol = saved_protocol_options(settings)
+        result.append(dict(
+            name=run.name,
+            phase=status.get('phase'),
+            generation=status.get('generation'),
+            target_generation=status.get('target_generation'),
+            opponent_mode=status.get('opponent_mode') or settings.get('opponent_mode')
+                          or (protocol[0] if protocol else None),
+            status_age_seconds=_file_age_seconds(run / 'status.json'),
+            preview_available=(run / 'preview.json').is_file(),
+        ))
+    result.sort(key=lambda item: (item['status_age_seconds'] is None,
+                                  item['status_age_seconds'] if item['status_age_seconds'] is not None else math.inf))
+    return result
+
 @app.get('/api/state')
-def state():
-    run = run_dir()
+def state(run_id: str | None = None):
+    explicit_run = run_id is not None
+    run = resolve_run_id(run_id) if explicit_run else run_dir()
+    attached = _attached_to(run)
     status = read_json(run / 'status.json', {}) if run else {}
-    if not active() and status.get('phase') in ('training', 'validating', 'paused'):
+    if not isinstance(status, dict):
+        status = {}
+    if not explicit_run and not active() and status.get('phase') in ('training', 'validating', 'paused'):
         status['phase'] = 'interrupted'
     history = []
     if run and (run / 'history.jsonl').exists():
@@ -72,20 +137,31 @@ def state():
             try: history.append(json.loads(line))
             except ValueError: pass
     error = None
-    if process is not None and process.poll() not in (None, 0) and run:
+    if not explicit_run and process is not None and process.poll() not in (None, 0) and run:
         log = run / 'console.log'
         error = log.read_text(encoding='utf-8', errors='replace')[-5000:] if log.exists() else 'Process failed'
     compatible = bool(run and saved_protocol_options(read_json(run / 'settings.json', {})))
-    return dict(active=active(), status=status, history=history[-500:],
+    return dict(active=attached if explicit_run else active(), read_only=explicit_run and not attached,
+                process_attached=attached if explicit_run else bool(run and active()),
+                selected_run=run.name if run else None,
+                status_age_seconds=_file_age_seconds(run / 'status.json') if run else None,
+                status=status, history=history[-500:],
                 species=read_json(run / 'species.json', {}) if run else {},
                 species_history=read_json(run / 'species-history.json', [])[-500:] if run else [],
                 baselines=read_json(run / 'baselines.json', {}) if run else {},
-                can_resume=bool(compatible and list(run.glob('checkpoint-*'))), error=error)
+                can_resume=bool(not explicit_run and compatible and list(run.glob('checkpoint-*'))), error=error)
 
 @app.get('/api/preview')
-def preview():
-    run = run_dir()
-    return read_json(run / 'preview.json') if run else None
+def preview(run_id: str | None = None):
+    run = resolve_run_id(run_id) if run_id is not None else run_dir()
+    value = read_json(run / 'preview.json') if run else None
+    if run_id is not None and isinstance(value, dict):
+        value = dict(value)
+        value['monitoring'] = dict(read_only=not _attached_to(run),
+                                   process_attached=_attached_to(run),
+                                   preview_age_seconds=_file_age_seconds(run / 'preview.json'),
+                                   run_id=run.name)
+    return value
 
 @app.post('/api/start')
 def start(options: StartOptions):
