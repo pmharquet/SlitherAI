@@ -128,25 +128,27 @@ def start(options: StartOptions):
         mode = options.opponent_mode or 'reference'
         games = (options.training_games if options.training_games is not None else
                  2 if mode == 'mixed-reference' else 5)
-        maps = (32 if mode == 'mixed-reference' and 'maps' not in options.model_fields_set
+        maps = (64 if mode == 'mixed-reference' and 'maps' not in options.model_fields_set
                 else options.maps)
         seconds = (90 if mode == 'mixed-reference' and 'seconds' not in options.model_fields_set
                    else options.seconds)
+        sensor_chunk = (8 if mode == 'mixed-reference' and options.sensor_chunk is None
+                        else options.sensor_chunk)
         try:
             protocol_settings(mode, games)
         except ValueError as exc:
             raise fastapi.HTTPException(400, str(exc)) from exc
         if mode == 'selfplay' and options.maps * options.worms != options.population:
             raise fastapi.HTTPException(400, 'Self-play exige maps × worms = population (256 génomes, 16 vers : 16 cartes).')
-        if mode == 'mixed-reference' and (options.population != 256 or maps != 32
-                or options.worms != 16 or seconds != 90):
-            raise fastapi.HTTPException(400, 'Mixed-reference v2 exige 256 génomes, 32 cartes, 16 vers et des parties de 90 secondes.')
+        if mode == 'mixed-reference' and (options.population != 256 or maps != 64
+                or options.worms != 16 or seconds != 90 or sensor_chunk != 8):
+            raise fastapi.HTTPException(400, 'Mixed-reference v3 exige 256 génomes, 64 cartes, 16 vers, 4 candidats, 12 références, des parties de 90 secondes et sensor_chunk=8.')
         run = RUNS / datetime.now().strftime('%Y%m%d-%H%M%S-%f')
         run.mkdir(parents=True)
         command += ['--maps', str(maps), '--worms', str(options.worms), '--population', str(options.population),
                     '--seconds', str(seconds), '--sensor-version', options.sensor_version or 'legacy-v1']
-        if options.sensor_chunk is not None:
-            command += ['--sensor-chunk', str(options.sensor_chunk)]
+        if sensor_chunk is not None:
+            command += ['--sensor-chunk', str(sensor_chunk)]
         if mode in ('selfplay', 'mixed-reference'):
             command += ['--opponent-mode', mode, '--training-games', str(games)]
     current = run

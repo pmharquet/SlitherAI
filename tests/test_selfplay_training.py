@@ -62,9 +62,9 @@ def test_midranks_are_tie_aware_scale_invariant_and_finite():
         midrank_percentiles([1., np.inf])
 
 
-def test_mixed_reference_schedule_assigns_all_genomes_and_rotates_half_the_seats():
-    games = mixed_reference_scenarios(81, 7)
-    assert games == mixed_reference_scenarios(81, 7)
+def test_mixed_reference_v2_schedule_keeps_historical_assignments():
+    games = mixed_reference_scenarios(81, 7, mixed_version=2)
+    assert games == mixed_reference_scenarios(81, 7, mixed_version=2)
     assert games[0]['seed'] != games[1]['seed']
     assert games[0]['candidate_seats'] == list(range(8))
     assert games[1]['candidate_seats'] == list(range(8, 16))
@@ -84,6 +84,31 @@ def test_mixed_reference_schedule_assigns_all_genomes_and_rotates_half_the_seats
         assert len(seats) == 2 and seats[0] != seats[1]
 
 
+def test_mixed_reference_v3_schedule_is_balanced_and_rotates_seats_across_generations():
+    games = mixed_reference_scenarios(81, 7)
+    assert games == mixed_reference_scenarios(81, 7)
+    assert games[0]['seed'] != games[1]['seed']
+    assert games[0]['candidate_seats'] == [12, 13, 14, 15]
+    assert games[1]['candidate_seats'] == [4, 5, 6, 7]
+    cohorts = []
+    seats_by_genome = {genome: [] for genome in range(256)}
+    for game in games:
+        assignment = np.asarray(game['assignment']).reshape(64, 16)
+        assert np.all((assignment >= 0).sum(axis=1) == 4)
+        assert np.all((assignment == -1).sum(axis=1) == 12)
+        assert sorted(assignment[assignment >= 0].tolist()) == list(range(256))
+        cohorts.append({frozenset(row[row >= 0].tolist()) for row in assignment})
+        for row in assignment:
+            for genome in row[row >= 0]:
+                seats_by_genome[int(genome)].append(int(np.flatnonzero(row == genome)[0]))
+    assert cohorts[0] != cohorts[1]
+    assert all(len(seats) == 2 and seats[0] != seats[1]
+               for seats in seats_by_genome.values())
+    next_generation = mixed_reference_scenarios(81, 8)
+    assert next_generation[0]['candidate_seats'] == [0, 1, 2, 3]
+    assert next_generation[1]['candidate_seats'] == [8, 9, 10, 11]
+
+
 def test_mixed_reference_metrics_remap_to_candidate_genomes_only():
     assignment = np.asarray([0, -1, 1, -1, 2, -1, 3, -1])
     slot_values = np.asarray([10., 101., 20., 102., 30., 103., 40., 104.])
@@ -101,7 +126,7 @@ def test_mixed_reference_evaluation_scores_each_candidate_from_two_games(tmp_pat
     torch.set_num_threads(2)
     neat_config = load_config(256)
     genomes = list(neat.Population(neat_config).population.items())
-    config = SimConfig(maps=32, worms=16, foods=8, body_points=8, preys=0)
+    config = SimConfig(maps=64, worms=16, foods=8, body_points=8, preys=0, sensor_chunk=8)
     trainer = Trainer(config, tmp_path, 'cpu', seed=81, validation_every=5,
                       opponent_mode='mixed-reference')
     assert trainer.episode_seconds == 90
@@ -145,7 +170,10 @@ def test_mixed_reference_evaluation_scores_each_candidate_from_two_games(tmp_pat
                for index, (_, genome) in enumerate(genomes))
     episode = json.loads((tmp_path / 'episodes' / 'generation-0000.json').read_text())
     assert episode['opponent_mode'] == 'mixed-reference'
+    assert episode['protocol'] == 'mixed-reference-v3'
     assert episode['aggregation'] == 'arithmetic_mean_two_games'
+    assert trainer.evaluation_metrics['candidates_per_arena'] == 4
+    assert trainer.evaluation_metrics['references_per_arena'] == 12
     assert all(row == [float(index), float(index + 100)]
                for index, row in enumerate(episode['game_scores']))
 
@@ -156,7 +184,7 @@ def test_mixed_reference_evaluation_scores_each_candidate_from_two_games(tmp_pat
 
 
 def test_mixed_preview_uses_compact_network_slots_and_marks_heuristics(tmp_path):
-    config = SimConfig(maps=32, worms=16, foods=8, body_points=8, preys=0)
+    config = SimConfig(maps=64, worms=16, foods=8, body_points=8, preys=0, sensor_chunk=8)
     trainer = Trainer(config, tmp_path, 'cpu', opponent_mode='mixed-reference')
     schedule = mixed_reference_scenarios(91, 0)
     assignment = np.asarray(schedule[0]['assignment'], dtype=np.int64)
@@ -182,9 +210,9 @@ def test_mixed_preview_uses_compact_network_slots_and_marks_heuristics(tmp_path)
         steps = 8
 
         def __init__(self):
-            self.alive = torch.ones((32, 16), dtype=torch.bool)
-            self.mass = torch.zeros((32, 16))
-            self.mass[0, 6] = 99.
+            self.alive = torch.ones((64, 16), dtype=torch.bool)
+            self.mass = torch.zeros((64, 16))
+            self.mass[0, 2] = 99.
 
         def snapshot(self, arena):
             return dict(arena=arena, radius=400., elapsed=.8, config=dataclasses.asdict(config),
@@ -192,8 +220,8 @@ def test_mixed_preview_uses_compact_network_slots_and_marks_heuristics(tmp_path)
                 food=[], maps=[])
 
     network = PreviewNetwork()
-    observations = torch.zeros((32 * 16, 530))
-    observations[:, 0] = torch.arange(32 * 16)
+    observations = torch.zeros((64 * 16, 530))
+    observations[:, 0] = torch.arange(64 * 16)
     trainer.generation = 3
     trainer.progress = {}
     trainer.live_world = PreviewWorld()
@@ -206,11 +234,12 @@ def test_mixed_preview_uses_compact_network_slots_and_marks_heuristics(tmp_path)
 
     trainer.publish_preview({'arena': 0, 'network_worm': 15})
     snapshot = json.loads((tmp_path / 'preview.json').read_text())
-    assert network.described == (6, 6.)
-    assert [worm['controller'] for worm in snapshot['worms']] == ['neat'] * 8 + ['reference'] * 8
-    assert snapshot['species_ids'][:8] == [int(assignment[index]) % 7 for index in range(8)]
-    assert snapshot['species_ids'][8:] == [None] * 8
-    assert snapshot['network']['worm'] == 6
+    assert network.described == (2, 2.)
+    assert [worm['controller'] for worm in snapshot['worms']] == [
+        'neat' if value >= 0 else 'reference' for value in assignment[:16]]
+    assert snapshot['species_ids'] == [int(assignment[index]) % 7 if assignment[index] >= 0 else None
+                                       for index in range(16)]
+    assert snapshot['network']['worm'] == 2
 
 
 def test_selfplay_evaluation_maps_slot_results_back_to_each_genome(tmp_path, monkeypatch):
@@ -295,12 +324,18 @@ def test_selfplay_layout_must_match_population_and_arena_count():
 
 
 def test_mixed_reference_layout_is_fixed_to_the_pilot_protocol():
-    config = SimConfig(maps=32, worms=16)
-    assert validate_mixed_reference_layout(config, 256, 2) == 32
-    with pytest.raises(ValueError, match='Mixed-reference requires'):
-        validate_mixed_reference_layout(dataclasses.replace(config, maps=64), 256, 2)
-    with pytest.raises(ValueError, match='Mixed-reference requires'):
-        validate_mixed_reference_layout(config, 128, 2)
+    legacy_config = SimConfig(maps=32, worms=16)
+    config = SimConfig(maps=64, worms=16, sensor_chunk=8)
+    assert validate_mixed_reference_layout(legacy_config, 256, 2, mixed_version=1) == 32
+    assert validate_mixed_reference_layout(legacy_config, 256, 2, mixed_version=2) == 32
+    assert validate_mixed_reference_layout(config, 256, 2, mixed_version=3) == 64
+    with pytest.raises(ValueError, match='Mixed-reference v3 requires'):
+        validate_mixed_reference_layout(dataclasses.replace(config, maps=32), 256, 2, mixed_version=3)
+    with pytest.raises(ValueError, match='Mixed-reference v3 requires'):
+        validate_mixed_reference_layout(config, 128, 2, mixed_version=3)
+    with pytest.raises(ValueError, match='sensor_chunk=8'):
+        validate_mixed_reference_layout(dataclasses.replace(config, sensor_chunk=4), 256, 2,
+                                        mixed_version=3)
 
 
 def test_selfplay_protocol_refuses_reference_resume_but_supports_same_mode_resume(
@@ -406,9 +441,9 @@ def test_mixed_reference_v1_resume_keeps_45_seconds_under_v2_default(tmp_path, m
 
     base_protocol_settings = train_module.protocol_settings
     monkeypatch.setattr(train_module, 'protocol_settings',
-        lambda mode='reference', training_games=5: base_protocol_settings(
-            mode, training_games, mixed_version=1) if mode == 'mixed-reference'
-            else base_protocol_settings(mode, training_games))
+        lambda mode='reference', training_games=5, mixed_version=None: base_protocol_settings(
+            mode, training_games, mixed_version=1 if mixed_version is None else mixed_version)
+            if mode == 'mixed-reference' else base_protocol_settings(mode, training_games))
 
     def fake_evaluate(self, genomes, neat_config):
         raw_scores = np.asarray([float(key % 17) for key, _ in genomes])
@@ -436,7 +471,7 @@ def test_mixed_reference_v1_resume_keeps_45_seconds_under_v2_default(tmp_path, m
     monkeypatch.setattr(train_module, 'protocol_settings', base_protocol_settings)
     resumed = Trainer(config, run, 'cpu', seed=37, validation_every=5,
                       opponent_mode='mixed-reference')
-    assert resumed.active_protocol['version'] == 'mixed-reference-v2'
+    assert resumed.active_protocol['version'] == 'mixed-reference-v3'
     resumed.train(256, 1, seconds=None, resume=run / 'checkpoint-1')
     assert resumed.active_protocol == saved['protocol']
     assert resumed.episode_seconds == 45

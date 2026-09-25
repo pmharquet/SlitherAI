@@ -38,19 +38,27 @@ def test_selfplay_protocol_is_separate_and_validated():
 
 def test_mixed_reference_protocol_is_versioned_and_strict():
     protocol = protocol_settings('mixed-reference', 2)
-    assert protocol['version'] == 'mixed-reference-v2'
+    assert protocol['version'] == 'mixed-reference-v3'
     assert protocol['population'] == 256
-    assert protocol['maps_per_game'] == 32 and protocol['worms_per_map'] == 16
-    assert protocol['candidate_slots_per_map'] == protocol['reference_slots_per_map'] == 8
+    assert protocol['maps_per_game'] == 64 and protocol['worms_per_map'] == 16
+    assert protocol['candidate_slots_per_map'] == 4 and protocol['reference_slots_per_map'] == 12
     assert protocol['games_per_genome'] == 2 and protocol['seconds_per_game'] == 90
+    assert protocol['sensor_chunk'] == 8
     assert protocol['aggregate'] == 'arithmetic_mean_two_games'
     assert protocol['stagnation_metric'] == 'within_generation_midrank_percentile'
     assert protocol['stagnation_delta'] == .02
     assert protocol['validation_maps'] == 32 and protocol['validation_seconds'] == 90
     assert protocol['validation_every'] == 5
     assert saved_protocol_options({'protocol': protocol}) == ('mixed-reference', 2)
-    assert mixed_reference_protocol_version(protocol) == 2
-    assert saved_protocol_options({'protocol': dict(protocol, maps_per_game=64)}) is None
+    assert mixed_reference_protocol_version(protocol) == 3
+    assert saved_protocol_options({'protocol': dict(protocol, candidate_slots_per_map=8)}) is None
+    v2 = protocol_settings('mixed-reference', 2, mixed_version=2)
+    assert v2['version'] == 'mixed-reference-v2'
+    assert v2['maps_per_game'] == 32 and v2['candidate_slots_per_map'] == 8
+    assert v2['reference_slots_per_map'] == 8 and v2['seconds_per_game'] == 90
+    assert 'sensor_chunk' not in v2
+    assert saved_protocol_options({'protocol': v2}) == ('mixed-reference', 2)
+    assert mixed_reference_protocol_version(v2) == 2
     v1 = protocol_settings('mixed-reference', 2, mixed_version=1)
     assert v1['version'] == 'mixed-reference-v1'
     assert v1['seconds_per_game'] == 45
@@ -71,12 +79,12 @@ def test_server_rejects_selfplay_shape_before_creating_run(monkeypatch):
 def test_server_rejects_mixed_reference_with_nonpilot_geometry(monkeypatch):
     monkeypatch.setattr(server, 'process', None)
     with pytest.raises(HTTPException) as error:
-        server.start(server.StartOptions(opponent_mode='mixed-reference', maps=64))
+        server.start(server.StartOptions(opponent_mode='mixed-reference', maps=32))
     assert error.value.status_code == 400
     assert 'Mixed-reference' in error.value.detail
 
 
-def test_server_starts_new_mixed_reference_with_v2_duration(tmp_path, monkeypatch):
+def test_server_starts_new_mixed_reference_with_v3_defaults(tmp_path, monkeypatch):
     monkeypatch.setattr(server, 'process', None)
     monkeypatch.setattr(server, 'current', None)
     monkeypatch.setattr(server, 'RUNS', tmp_path)
@@ -96,22 +104,24 @@ def test_server_starts_new_mixed_reference_with_v2_duration(tmp_path, monkeypatc
     assert result['started'] is True
     command = captured['command']
     assert command[command.index('--seconds') + 1] == '90'
-    assert command[command.index('--maps') + 1] == '32'
+    assert command[command.index('--maps') + 1] == '64'
+    assert command[command.index('--sensor-chunk') + 1] == '8'
 
 
-def test_server_resume_preserves_mixed_v1_duration(tmp_path, monkeypatch):
+@pytest.mark.parametrize(('version', 'duration'), [(1, 45), (2, 90)])
+def test_server_resume_preserves_mixed_v1_v2_durations(tmp_path, monkeypatch, version, duration):
     import dataclasses
     from slitherai.config import SimConfig
 
     monkeypatch.setattr(server, 'process', None)
-    run = tmp_path / 'mixed-v1'
+    run = tmp_path / f'mixed-v{version}'
     run.mkdir()
     (run / 'checkpoint-7').write_bytes(b'checkpoint marker')
     config = dataclasses.asdict(SimConfig(maps=32, worms=16))
     from slitherai.io import write_json
     write_json(run / 'settings.json', dict(
-        protocol=protocol_settings('mixed-reference', 2, mixed_version=1),
-        config=config, population=256, seconds=45, seed=37, validation_every=5))
+        protocol=protocol_settings('mixed-reference', 2, mixed_version=version),
+        config=config, population=256, seconds=duration, seed=37, validation_every=5))
     monkeypatch.setattr(server, 'current', run)
     captured = {}
 
@@ -127,5 +137,5 @@ def test_server_resume_preserves_mixed_v1_duration(tmp_path, monkeypatch):
     monkeypatch.setattr(server.subprocess, 'Popen', fake_popen)
     server.start(server.StartOptions(resume=True))
     command = captured['command']
-    assert command[command.index('--seconds') + 1] == '45'
+    assert command[command.index('--seconds') + 1] == str(duration)
     assert command[command.index('--opponent-mode') + 1] == 'mixed-reference'
