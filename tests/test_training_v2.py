@@ -112,6 +112,40 @@ def test_stagnation_tracks_recent_progress_despite_an_old_lucky_record():
     assert species.species[1].recent_score == 2
 
 
+def test_rank_stagnation_is_scale_invariant_and_keeps_raw_selection_fitness():
+    config = load_config(4).stagnation_config
+    config.progress_metric = 'rank_percentile'
+    config.progress_delta = .02
+    tracker = WindowedStagnation(config, neat.reporting.ReporterSet())
+    species = species_set([[0., 0.]])
+    group = list(species.species[1].members.values())
+
+    for generation in range(10):
+        raw = float(10 ** generation)
+        for genome in group:
+            genome.fitness = raw
+            genome.anchor_fitness = raw
+            genome.stagnation_fitness = .3
+        tracker.update(species, generation)
+
+    measured = species.species[1]
+    assert measured.fitness == 1e9  # NEAT species selection still sees raw scores.
+    assert measured.fitness_history[-1] == 1e9
+    assert measured.stagnation_history == [.3] * 10
+    assert measured.last_improved == 4  # Raw score scale changes do not reset stagnation.
+    assert measured.progress_delta == pytest.approx(0.)
+
+    for generation in range(10, 15):
+        for genome in group:
+            genome.fitness = float(10 ** generation)
+            genome.anchor_fitness = genome.fitness
+            genome.stagnation_fitness = .35
+        tracker.update(species, generation)
+    assert measured.fitness == 1e14
+    assert measured.last_improved == 14
+    assert measured.progress_delta == pytest.approx(.05)
+
+
 def test_best_mean_species_is_protected_and_removals_are_limited():
     config = load_config(4).stagnation_config
     config.species_elitism = 1

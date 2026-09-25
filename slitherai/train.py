@@ -18,7 +18,9 @@ from .schema import contract, sensor_version_from_schema
 from .sim import WorldBatch
 from .species_metrics import SpeciesReporter
 from .evaluation import (PROTOCOL, protocol_settings, scenarios, aggregate_scores,
-                         play_episode, play_population_episode, heuristic, fixed_validation)
+                         play_episode, play_population_episode, play_mixed_population_episode,
+                         heuristic, fixed_validation)
+from .protocol import mixed_reference_protocol_version, selfplay_protocol_version
 from .rewards import REWARD_VERSION
 from .warmstart import initialize_from_checkpoint
 
@@ -62,6 +64,58 @@ def selfplay_scenarios(seed, generation, population_size, worms, training_games)
     return games
 
 
+def mixed_reference_scenarios(seed, generation, population_size=256,
+                              maps=32, worms=16, training_games=2):
+    """Assign every genome once against eight fixed heuristics per arena.
+
+    The two games reshuffle cohort membership and rotate candidate seats from
+    slots 0–7 to slots 8–15. A value of -1 marks a heuristic-controlled slot.
+    """
+    if (population_size, maps, worms, training_games) != (256, 32, 16, 2):
+        raise ValueError('Mixed-reference requires population=256, maps=32, worms=16, and two games')
+    games = []
+    for trial in range(training_games):
+        rng = random.Random(seed + generation * 1_000_003 + 0xA71C + trial * 200_003)
+        ordered = list(range(population_size))
+        rng.shuffle(ordered)
+        assignment = np.full((maps, worms), -1, dtype=np.int64)
+        candidate_seats = list(range(trial * 8, (trial + 1) * 8))
+        for arena in range(maps):
+            group = ordered[arena * 8:(arena + 1) * 8]
+            assignment[arena, candidate_seats] = group
+        flat = assignment.reshape(-1).tolist()
+        candidates = [index for index in flat if index >= 0]
+        if sorted(candidates) != list(range(population_size)):
+            raise RuntimeError('Mixed-reference matchmaking must assign every candidate exactly once')
+        games.append(dict(
+            seed=seed + 30_000_019 + generation * 1_000_003 + trial * 200_003,
+            trial=trial, candidate_seats=candidate_seats, reference_seats=[s for s in range(worms)
+                                                                           if s not in candidate_seats],
+            assignment=flat))
+    return games
+
+
+def remap_mixed_slot_values(slot_values, assignment, population_size=256):
+    """Return candidate-only slot values in genome-list order."""
+    assignment = np.asarray(assignment)
+    outcomes = np.asarray(slot_values, dtype=np.float64)
+    if (assignment.ndim != 1 or assignment.dtype.kind not in ('i', 'u')
+            or outcomes.shape != assignment.shape):
+        raise ValueError('Mixed-reference values and assignment must be matching flat vectors')
+    assignment = assignment.astype(np.int64, copy=False)
+    if not np.isfinite(outcomes).all():
+        raise ValueError('Mixed-reference slot values must be finite')
+    candidate_slots = np.flatnonzero(assignment >= 0)
+    candidate_ids = assignment[candidate_slots]
+    if (np.any(assignment < -1) or np.any(assignment >= population_size)
+            or len(candidate_ids) != population_size
+            or sorted(candidate_ids.tolist()) != list(range(population_size))):
+        raise ValueError('Mixed-reference assignment must place each genome exactly once')
+    remapped = np.empty(population_size, dtype=np.float64)
+    remapped[candidate_ids] = outcomes[candidate_slots]
+    return remapped
+
+
 def aggregate_selfplay_scores(game_scores):
     """Aggregate each candidate's co-evolution games using the v1 formula."""
     scores = np.asarray(game_scores, dtype=np.float64)
@@ -70,6 +124,35 @@ def aggregate_selfplay_scores(game_scores):
     mean = scores.mean(axis=1)
     median = np.median(scores, axis=1)
     return .5 * mean + .5 * median
+
+
+def midrank_percentiles(scores):
+    """Map finite scores to deterministic population midranks in (0, 1)."""
+    values = np.asarray(scores, dtype=np.float64)
+    if values.ndim != 1 or values.size < 1 or not np.isfinite(values).all():
+        raise ValueError('Expected a non-empty finite score vector')
+    order = np.argsort(values, kind='mergesort')
+    result = np.empty(values.shape, dtype=np.float64)
+    start, count = 0, values.size
+    while start < count:
+        end = start + 1
+        while end < count and values[order[end]] == values[order[start]]:
+            end += 1
+        result[order[start:end]] = (start + end) / (2.0 * count)
+        start = end
+    return result
+
+
+def configure_stagnation_protocol(population, protocol):
+    """Bind checkpointed stagnation behavior to the saved selection protocol."""
+    config = population.config.stagnation_config
+    if protocol.get('stagnation_metric') == 'within_generation_midrank_percentile':
+        config.progress_metric = 'rank_percentile'
+        config.progress_window = protocol['stagnation_window']
+        config.progress_delta = protocol['stagnation_delta']
+    else:
+        # Preserve reference and self-play-v1 behavior on fresh starts and resume.
+        config.progress_metric = 'raw'
 
 
 def validate_selfplay_layout(config, population_size, training_games):
@@ -81,6 +164,22 @@ def validate_selfplay_layout(config, population_size, training_games):
     if config.maps != expected_maps:
         raise ValueError(f'Self-play requires maps=population/worms ({expected_maps}); got {config.maps}')
     return expected_maps
+
+
+def validate_mixed_reference_layout(config, population_size, training_games,
+                                    validation_every=5):
+    if (population_size != 256 or config.maps != 32 or config.worms != 16
+            or training_games != 2 or validation_every != 5):
+        raise ValueError('Mixed-reference requires population=256, maps=32, worms=16, '
+                         'two 45-second games per genome, and validation every five generations')
+    return config.maps
+
+
+def mixed_reference_scenarios_for_config(seed, generation, config,
+                                         population_size, training_games):
+    validate_mixed_reference_layout(config, population_size, training_games)
+    return mixed_reference_scenarios(seed, generation, population_size,
+                                     config.maps, config.worms, training_games)
 
 
 def _saved_sensor_version(run, saved_config):
@@ -175,7 +274,7 @@ class TrainingReporter(neat.reporting.BaseReporter):
 
 class Trainer:
     def __init__(self, config, run, device='auto', seed=1, validation_every=5,
-                 opponent_mode='reference', training_games=5):
+                 opponent_mode='reference', training_games=None):
         self.config = config.validate()
         self.run = Path(run).resolve()
         self.run.mkdir(parents=True, exist_ok=True)
@@ -183,13 +282,17 @@ class Trainer:
         if self.device == 'cuda' and not torch.cuda.is_available(): raise RuntimeError('CUDA unavailable')
         torch.set_num_threads(4)
         self.seed, self.validation_every = seed, validation_every
+        if training_games is None:
+            training_games = 2 if opponent_mode == 'mixed-reference' else 5
         self.opponent_mode, self.training_games = opponent_mode, training_games
+        self.active_protocol = protocol_settings(opponent_mode, training_games)
+        self.stagnation_metric = self.active_protocol.get('stagnation_metric', 'raw')
         self.generation = 0
         self.last_metrics = None
         self.last_preview = 0
         self.started = time.perf_counter()
         self.generation_started = self.started
-        self.episode_seconds = 90.
+        self.episode_seconds = self.active_protocol.get('seconds_per_game', 90.)
         self.population_size = 256
         self.generations = 50
         self.base_generation = 0
@@ -208,13 +311,33 @@ class Trainer:
         if self.live_focal is not None:
             chosen = int(self.live_focal[arena])
             slot = arena
+            network_slot = slot
+            network_observations = self.live_observations
         else:
-            chosen = int(control.get('network_worm', -1))
-            if not 0 <= chosen < world.c.worms:
-                candidates = torch.where(world.alive[arena], world.mass[arena], -torch.inf)
-                chosen = int(candidates.argmax()) if bool(world.alive[arena].any()) else int(world.mass[arena].argmax())
+            frame_assignment = self.live_assignment.reshape(world.c.maps, world.c.worms)[arena]
+            requested = int(control.get('network_worm', -1))
+            if self.opponent_mode == 'mixed-reference':
+                candidate_worms = np.flatnonzero(frame_assignment >= 0)
+                if 0 <= requested < world.c.worms and frame_assignment[requested] >= 0:
+                    chosen = requested
+                else:
+                    candidate_mask = torch.as_tensor(candidate_worms, device=self.device)
+                    alive_candidates = candidate_mask[world.alive[arena, candidate_mask]]
+                    eligible = alive_candidates if len(alive_candidates) else candidate_mask
+                    chosen = int(eligible[world.mass[arena, eligible].argmax()])
+            else:
+                chosen = requested
+                if not 0 <= chosen < world.c.worms:
+                    candidates = torch.where(world.alive[arena], world.mass[arena], -torch.inf)
+                    chosen = int(candidates.argmax()) if bool(world.alive[arena].any()) else int(world.mass[arena].argmax())
             slot = arena*world.c.worms+chosen
-        network = self.live_network.describe(slot, self.live_observations,
+            if self.opponent_mode == 'mixed-reference':
+                network_slot = self.live_network.world_to_network_slot[slot]
+                network_observations = self.live_observations[self.live_network.world_slots]
+            else:
+                network_slot = slot
+                network_observations = self.live_observations
+        network = self.live_network.describe(network_slot, network_observations,
                                              sensor_version=self.config.sensor_version)
         network.update(species_id=species_ids.get(network['genome_id']), arena=arena, worm=chosen,
                        alive=bool(world.alive[arena, chosen]), generation=self.generation,
@@ -228,8 +351,11 @@ class Trainer:
             for worm in snapshot['worms']:
                 worm['controller'] = 'neat' if worm['id'] == chosen else 'reference'
         else:
-            assignment = self.live_assignment.reshape(world.c.maps, world.c.worms)[arena].tolist()
-            ids = [species_ids.get(self.live_network.genomes[int(index)].key) for index in assignment]
+            assignment = frame_assignment.tolist()
+            ids = [species_ids.get(self.live_network.genomes[int(index)].key) if index >= 0 else None
+                   for index in assignment]
+            for worm in snapshot['worms']:
+                worm['controller'] = 'neat' if assignment[worm['id']] >= 0 else 'reference'
         snapshot.update(generation=self.generation, assignment=assignment, species_ids=ids,
                         network=network, evaluation=self.progress)
         write_json(self.run / 'preview.json', snapshot)
@@ -244,7 +370,7 @@ class Trainer:
                      schema=contract(self.config.sensor_version),
                      config=dataclasses.asdict(self.config), last_metrics=self.last_metrics,
                      run=str(self.run),
-                     protocol=protocol_settings(self.opponent_mode, self.training_games),
+                     protocol=self.active_protocol,
                      opponent_mode=self.opponent_mode, training_games=self.training_games,
                      progress=self.progress, **extra)
         write_json(self.run / 'status.json', state)
@@ -276,6 +402,8 @@ class Trainer:
     def evaluate(self, genomes, neat_config):
         if self.opponent_mode == 'selfplay':
             return self._evaluate_selfplay(genomes, neat_config)
+        if self.opponent_mode == 'mixed-reference':
+            return self._evaluate_mixed_reference(genomes, neat_config)
         self.generation_started = time.perf_counter()
         games = scenarios(self.seed, self.generation, self.config.worms)
         total_batches = math.ceil(len(genomes)/self.config.maps)
@@ -376,11 +504,15 @@ class Trainer:
             game_scores[assignment, trial] = np.asarray(result['fitness'], dtype=np.float64)
 
         scores = aggregate_selfplay_scores(game_scores)
+        stagnation_scores = (midrank_percentiles(scores)
+                             if self.stagnation_metric == 'within_generation_midrank_percentile' else None)
         for index, (_, genome) in enumerate(genomes):
             genome.fitness = float(scores[index])
-            # NEAT species stagnation currently reads this compatibility field.
-            # Self-play scores have no fixed-anchor interpretation.
+            # Retain the old alias for tooling. Self-play-v2 stagnation reads
+            # its separate rank signal; reproduction keeps using raw fitness.
             genome.anchor_fitness = float(scores[index])
+            if stagnation_scores is not None:
+                genome.stagnation_fitness = float(stagnation_scores[index])
             genome.behavior = {key:float(value[index].mean()) for key,value in values.items()}
         self.evaluation_metrics = {key:float(value.mean()) for key,value in values.items()}
         self.evaluation_metrics.update(
@@ -390,6 +522,9 @@ class Trainer:
             episode_score_sd=float(game_scores.std(axis=1).mean()),
             episodes=int(game_scores.size), arenas_per_game=maps,
             selection_score=float(scores.mean()),
+            stagnation_metric=self.active_protocol.get('stagnation_metric', 'raw'),
+            stagnation_score_mean=(float(stagnation_scores.mean())
+                                   if stagnation_scores is not None else None),
             champion=genomes[int(scores.argmax())][1].behavior)
         self.progress['completed_episodes'] = self.progress['total_episodes']
         write_json(self.run / 'episodes' / f'generation-{self.generation:04d}.json',
@@ -400,18 +535,126 @@ class Trainer:
                             for game in games],
                  assignments=[game['assignment'] for game in games],
                  score=scores.tolist(), game_scores=game_scores.tolist(),
+                 stagnation_score=(stagnation_scores.tolist() if stagnation_scores is not None else None),
                  metrics={key:value.tolist() for key,value in values.items()}))
 
-    def train(self, population=256, generations=50, seconds=90., resume=None,
+    def _evaluate_mixed_reference(self, genomes, neat_config):
+        self.generation_started = time.perf_counter()
+        population_size = len(genomes)
+        maps = validate_mixed_reference_layout(
+            self.config, population_size, self.training_games, self.validation_every)
+        games = mixed_reference_scenarios_for_config(
+            self.seed, self.generation, self.config, population_size, self.training_games)
+        game_scores = np.zeros((population_size, self.training_games), dtype=np.float64)
+        values = {}
+        agent_steps = 0
+        slots_per_game = maps * self.config.worms
+
+        for trial, scenario in enumerate(games):
+            self.controls()
+            assignment = np.asarray(scenario['assignment'], dtype=np.int64)
+            candidate_slots = np.flatnonzero(assignment >= 0)
+            candidate_ids = assignment[candidate_slots]
+            if (len(candidate_slots) != population_size
+                    or sorted(candidate_ids.tolist()) != list(range(population_size))):
+                raise RuntimeError('Each mixed-reference genome must appear exactly once per game')
+            if any(np.count_nonzero(assignment.reshape(maps, self.config.worms)[arena] >= 0) != 8
+                   for arena in range(maps)):
+                raise RuntimeError('Mixed-reference requires eight candidate slots per arena')
+
+            self.progress = dict(game=trial + 1, games=self.training_games,
+                batch=1, batches=1, anchor=False,
+                completed_episodes=trial * population_size,
+                total_episodes=population_size * self.training_games,
+                candidates=population_size, arenas=maps, worms_per_arena=self.config.worms,
+                candidates_per_arena=8, references_per_arena=8)
+            self.status('training', episode_seconds=0)
+            episode_steps = [0]
+
+            def tick(world, network, observations, slot_assignment, step):
+                self.live_world, self.live_network = world, network
+                self.live_observations = observations
+                self.live_assignment = np.asarray(slot_assignment, dtype=np.int64)
+                self.live_focal = None
+                episode_steps[0] = int(world.steps)
+                self.publish_preview(self.controls())
+                flat_alive = world.alive.reshape(-1)
+                candidate_alive = int(flat_alive[candidate_slots].sum())
+                self.status('training', episode_seconds=round(world.elapsed, 1),
+                    agent_steps_per_second=round(
+                        (agent_steps + population_size * episode_steps[0]) /
+                        max(.001, time.perf_counter()-self.generation_started), 1),
+                    alive=int(world.alive.sum()), candidates_alive=candidate_alive,
+                    gpu_memory_mb=round(torch.cuda.memory_allocated()/1e6) if self.device == 'cuda' else None)
+
+            result = play_mixed_population_episode(
+                [genome for _, genome in genomes], neat_config, self.config, self.device,
+                seed=scenario['seed'], assignment=assignment, seconds=self.episode_seconds,
+                shared_random=True, on_tick=tick, controls=self.controls)
+            agent_steps += episode_steps[0] * population_size
+            if 'fitness' not in result:
+                raise RuntimeError('Mixed-reference evaluation did not return fitness')
+            for key, outcomes in result.items():
+                outcome_array = np.asarray(outcomes, dtype=np.float64)
+                if outcome_array.shape != (slots_per_game,) or not np.isfinite(outcome_array).all():
+                    raise RuntimeError(f'Mixed-reference metric {key!r} must have one finite value per world slot')
+                if key not in values:
+                    values[key] = np.zeros_like(game_scores)
+                genome_values = remap_mixed_slot_values(outcome_array, assignment, population_size)
+                values[key][:, trial] = genome_values
+                if key == 'fitness':
+                    game_scores[:, trial] = genome_values
+
+        if not np.isfinite(game_scores).all():
+            raise RuntimeError('Mixed-reference produced non-finite candidate fitness')
+        scores = game_scores.mean(axis=1)
+        stagnation_scores = midrank_percentiles(scores)
+        for index, (_, genome) in enumerate(genomes):
+            genome.fitness = float(scores[index])
+            genome.anchor_fitness = float(scores[index])
+            genome.stagnation_fitness = float(stagnation_scores[index])
+            genome.behavior = {key:float(value[index].mean()) for key,value in values.items()}
+        self.evaluation_metrics = {key:float(value.mean()) for key,value in values.items()}
+        self.evaluation_metrics.update(
+            opponent_mode='mixed-reference', games_per_genome=self.training_games,
+            aggregation='arithmetic_mean_two_games', anchor_fitness=None,
+            anchor_fitness_compatibility_alias=float(scores.mean()),
+            episode_score_sd=float(game_scores.std(axis=1).mean()),
+            episodes=int(game_scores.size), arenas_per_game=maps,
+            candidates_per_arena=8, references_per_arena=8,
+            selection_score=float(scores.mean()),
+            stagnation_metric=self.active_protocol['stagnation_metric'],
+            stagnation_score_mean=float(stagnation_scores.mean()),
+            champion=genomes[int(scores.argmax())][1].behavior)
+        self.progress['completed_episodes'] = self.progress['total_episodes']
+        write_json(self.run / 'episodes' / f'generation-{self.generation:04d}.json',
+            dict(generation=self.generation, opponent_mode='mixed-reference',
+                 aggregation='arithmetic_mean_two_games',
+                 genome_ids=[key for key,_ in genomes],
+                 scenarios=[{key:value for key,value in game.items() if key != 'assignment'}
+                            for game in games],
+                 assignments=[game['assignment'] for game in games],
+                 score=scores.tolist(), game_scores=game_scores.tolist(),
+                 stagnation_score=stagnation_scores.tolist(),
+                 metrics={key:value.tolist() for key,value in values.items()}))
+
+    def train(self, population=256, generations=50, seconds=None, resume=None,
               initialize_from=None, sensor_version_explicit=False,
               sensor_chunk_explicit=False):
+        protocol = protocol_settings(self.opponent_mode, self.training_games)
+        if seconds is None:
+            seconds = protocol.get('seconds_per_game', 90.)
         if population < 4 or generations < 1 or seconds <= 0:
             raise ValueError('Invalid training limits')
         if resume and initialize_from:
             raise ValueError('--resume and --initialize-from are mutually exclusive')
-        protocol = protocol_settings(self.opponent_mode, self.training_games)
         if self.opponent_mode == 'selfplay':
             validate_selfplay_layout(self.config, population, self.training_games)
+        elif self.opponent_mode == 'mixed-reference':
+            validate_mixed_reference_layout(
+                self.config, population, self.training_games, self.validation_every)
+            if seconds != protocol['seconds_per_game']:
+                raise ValueError('Mixed-reference training episodes are fixed at 45 seconds')
         self.population_size, self.generations, self.episode_seconds = population, generations, seconds
         random.seed(self.seed)
         np.random.seed(self.seed)
@@ -419,12 +662,28 @@ class Trainer:
             raise ValueError('This trainer requires growth-v2; preserve legacy runs and start a new session')
         if resume:
             settings = read_json(self.run / 'settings.json', {})
-            if settings.get('protocol') != protocol:
+            saved_protocol = settings.get('protocol')
+            if self.opponent_mode == 'selfplay':
+                if (selfplay_protocol_version(saved_protocol) is None
+                        or saved_protocol.get('games_per_genome') != self.training_games):
+                    raise ValueError('Evaluation protocol changed: start a new session instead of mixing fitness histories')
+                protocol = saved_protocol
+            elif self.opponent_mode == 'mixed-reference':
+                if (mixed_reference_protocol_version(saved_protocol) != 1
+                        or saved_protocol.get('games_per_genome') != self.training_games
+                        or settings.get('seconds') != 45
+                        or settings.get('validation_every') != 5):
+                    raise ValueError('Evaluation protocol changed: start a new session instead of mixing fitness histories')
+                protocol = saved_protocol
+            elif saved_protocol != protocol:
                 raise ValueError('Evaluation protocol changed: start a new session instead of mixing fitness histories')
             pop = neat.Checkpointer.restore_checkpoint(str(resume))
             self.population_size = pop.config.pop_size
             if self.opponent_mode == 'selfplay':
                 validate_selfplay_layout(self.config, self.population_size, self.training_games)
+            elif self.opponent_mode == 'mixed-reference':
+                validate_mixed_reference_layout(
+                    self.config, self.population_size, self.training_games, self.validation_every)
             settings = read_json(self.run / 'settings.json')
             saved_config = SimConfig.from_dict(settings['config']).validate()
             if sensor_chunk_explicit and self.config.sensor_chunk != saved_config.sensor_chunk:
@@ -458,9 +717,15 @@ class Trainer:
             self.population_size = len(pop.population)
             if self.opponent_mode == 'selfplay':
                 validate_selfplay_layout(self.config, self.population_size, self.training_games)
+            elif self.opponent_mode == 'mixed-reference':
+                validate_mixed_reference_layout(
+                    self.config, self.population_size, self.training_games, self.validation_every)
         else:
             if (self.run / 'history.jsonl').exists(): raise ValueError('Run already exists; resume it or select a new directory')
             pop = neat.Population(load_config(population))
+        configure_stagnation_protocol(pop, protocol)
+        self.active_protocol = protocol
+        self.stagnation_metric = protocol.get('stagnation_metric', 'raw')
         self.base_generation = pop.generation
         write_json(self.run / 'schema.json', contract(self.config.sensor_version))
         settings = dict(config=dataclasses.asdict(self.config), seed=self.seed, population=self.population_size,
@@ -494,11 +759,12 @@ class Trainer:
 def main():
     p = argparse.ArgumentParser(description='Train recurrent NEAT Slither policies in batched CUDA arenas')
     p.add_argument('--run', default='runs/main')
-    p.add_argument('--maps', type=int, default=64)
+    p.add_argument('--maps', type=int)
     p.add_argument('--worms', type=int, default=16)
     p.add_argument('--population', type=int, default=256)
     p.add_argument('--generations', type=int, default=50)
-    p.add_argument('--seconds', type=float, default=90)
+    p.add_argument('--seconds', type=float,
+                   help='training episode duration; mixed-reference is fixed at 45 seconds')
     p.add_argument('--foods', type=int, default=1024)
     p.add_argument('--body-points', type=int, default=96)
     p.add_argument('--arena-radius', type=float, default=2400)
@@ -506,26 +772,30 @@ def main():
     p.add_argument('--sensor-version', choices=['legacy-v1', 'export-v1'])
     p.add_argument('--sensor-chunk', type=int, choices=[4, 8, 16],
                    help='raycast batch size; default 4, omitted on resume inherits saved settings')
-    p.add_argument('--opponent-mode', choices=['reference', 'selfplay'], default='reference',
-                   help='selection opponents; selfplay controls every worm in each arena')
-    p.add_argument('--training-games', type=int, default=5,
-                   help='games per genome in selfplay (1..worms); reference uses exactly 5')
+    p.add_argument('--opponent-mode', choices=['reference', 'selfplay', 'mixed-reference'], default='reference',
+                   help='selection opponents: fixed focal, full self-play, or 8 NEAT vs 8 heuristic')
+    p.add_argument('--training-games', type=int,
+                   help='games per genome; reference uses 5 and mixed-reference uses 2')
     p.add_argument('--seed', type=int, default=1)
     p.add_argument('--validation-every', type=int, default=5)
     start_from = p.add_mutually_exclusive_group()
     start_from.add_argument('--resume')
     start_from.add_argument('--initialize-from', help='trusted local checkpoint-N; starts a new run and resets fitness/species history')
     args = p.parse_args()
-    config = SimConfig(maps=args.maps, worms=args.worms, foods=args.foods,
+    maps = args.maps if args.maps is not None else (32 if args.opponent_mode == 'mixed-reference' else 64)
+    seconds = args.seconds if args.seconds is not None else (45 if args.opponent_mode == 'mixed-reference' else 90)
+    training_games = (args.training_games if args.training_games is not None else
+                      2 if args.opponent_mode == 'mixed-reference' else 5)
+    config = SimConfig(maps=maps, worms=args.worms, foods=args.foods,
                        body_points=args.body_points, arena_radius=args.arena_radius,
                        sensor_chunk=args.sensor_chunk or 4,
                        sensor_version=args.sensor_version or 'legacy-v1')
-    if args.opponent_mode == 'reference' and args.training_games == 5:
+    if args.opponent_mode == 'reference' and training_games == 5:
         trainer = Trainer(config, args.run, args.device, args.seed, args.validation_every)
     else:
         trainer = Trainer(config, args.run, args.device, args.seed, args.validation_every,
-                          opponent_mode=args.opponent_mode, training_games=args.training_games)
-    trainer.train(args.population, args.generations, args.seconds, args.resume,
+                          opponent_mode=args.opponent_mode, training_games=training_games)
+    trainer.train(args.population, args.generations, seconds, args.resume,
                   initialize_from=args.initialize_from,
                   sensor_version_explicit=args.sensor_version is not None,
                   sensor_chunk_explicit=args.sensor_chunk is not None)

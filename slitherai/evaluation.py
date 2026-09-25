@@ -160,6 +160,99 @@ def play_population_episode(genomes, neat_config, config, device, seed, assignme
     return population_episode_metrics(world)
 
 
+@torch.inference_mode()
+def play_mixed_population_episode(genomes, neat_config, config, device, seed, assignment, seconds,
+                                  shared_random=True, on_tick=None, controls=None):
+    """Evaluate candidate genomes in parallel against fixed heuristic opponents.
+
+    ``assignment`` is a flat map-major/worm-minor vector with one entry per
+    world slot. ``-1`` selects the fixed :func:`heuristic` policy; every other
+    value selects an index in ``genomes``. Candidate networks are compacted in
+    ascending world-slot order. Metrics are returned for every world slot in
+    map-major order. The preview callback receives full flattened observations
+    and the full assignment; ``network.world_slots`` and
+    ``network.world_to_network_slot`` map candidate world slots to the compact
+    network batch. ``network.assignment`` gives the genome index for each
+    compact network slot.
+
+    The game stops once all candidate-controlled slots are dead, matching the
+    focal-survival stopping rule of :func:`play_episode`. Heuristic slots may
+    therefore have partial-episode metrics after the last candidate dies.
+    """
+    if not genomes:
+        raise ValueError('At least one NEAT genome is required')
+    config.validate()
+    try:
+        assignment_values = list(assignment)
+        assignment_array = np.asarray(assignment_values)
+    except (TypeError, ValueError) as exc:
+        raise ValueError('assignment must be a one-dimensional integer vector') from exc
+    if assignment_array.ndim != 1:
+        raise ValueError('assignment must be a one-dimensional integer vector')
+    slots = config.maps * config.worms
+    if len(assignment_values) != slots:
+        raise ValueError(f'assignment must contain one entry per map/worm cell ({slots})')
+    if any(not isinstance(index, (int, np.integer)) or isinstance(index, (bool, np.bool_))
+           for index in assignment_values):
+        raise ValueError('assignment entries must be integer genome indices or -1')
+    assignment_values = [int(index) for index in assignment_values]
+    if any(index < -1 or index >= len(genomes) for index in assignment_values):
+        raise ValueError('assignment entries must be -1 or refer to an existing genome')
+    candidate_slots = [slot for slot, index in enumerate(assignment_values) if index >= 0]
+    if not candidate_slots:
+        raise ValueError('At least one slot must be assigned to a candidate genome')
+    candidate_assignment = [assignment_values[slot] for slot in candidate_slots]
+    try:
+        seconds = float(seconds)
+    except (TypeError, ValueError) as exc:
+        raise ValueError('seconds must be finite and positive') from exc
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise ValueError('seconds must be finite and positive')
+    steps = round(seconds / config.dt)
+    if steps < 1:
+        raise ValueError('seconds must include at least one simulation step')
+
+    world = WorldBatch(config, device, seed, shared_random=shared_random)
+    network = BatchedNetwork(genomes, neat_config, assignment=candidate_assignment, device=device)
+    network.world_slots = candidate_slots
+    world_to_network_slot = [-1] * slots
+    for network_slot, world_slot in enumerate(candidate_slots):
+        world_to_network_slot[world_slot] = network_slot
+    network.world_to_network_slot = world_to_network_slot
+    candidate_world_slots = torch.as_tensor(candidate_slots, dtype=torch.long, device=device)
+    heuristic_slots = torch.as_tensor(
+        [slot for slot, index in enumerate(assignment_values) if index == -1],
+        dtype=torch.long, device=device)
+    candidate_alive = torch.zeros(slots, dtype=torch.bool, device=device)
+    candidate_alive[candidate_world_slots] = True
+
+    published = -math.inf
+    observations_flat = None
+    for step in range(steps):
+        observations_flat = world.observe().reshape(slots, -1)
+        actions_flat = torch.empty((slots, 2), dtype=observations_flat.dtype,
+                                   device=observations_flat.device)
+        if len(heuristic_slots):
+            actions_flat[heuristic_slots] = heuristic(observations_flat[heuristic_slots])
+        candidate_actions = network.activate(observations_flat[candidate_world_slots])
+        actions_flat[candidate_world_slots] = candidate_actions
+        world.step(actions_flat.reshape(config.maps, config.worms, 2))
+        now = time.perf_counter()
+        if now - published > 1.:
+            if controls:
+                controls()
+            if on_tick:
+                on_tick(world, network, observations_flat, assignment_values, step)
+            published = now
+        if not bool((world.alive.reshape(-1) & candidate_alive).any()):
+            break
+    if on_tick:
+        on_tick(world, network, observations_flat, assignment_values, step)
+    if controls:
+        controls()
+    return population_episode_metrics(world)
+
+
 def fixed_validation(genome, neat_config, config, device, seconds=90., controls=None, maps=32, policy='neat'):
     c = dataclasses.replace(config, maps=maps)
     result = play_episode([genome]*maps if genome else None, neat_config, c, device,

@@ -29,7 +29,7 @@ class StartOptions(BaseModel):
     device: str = 'auto'
     sensor_version: Literal['legacy-v1', 'export-v1'] | None = None
     sensor_chunk: Literal[4, 8, 16] | None = None
-    opponent_mode: Literal['reference', 'selfplay'] | None = None
+    opponent_mode: Literal['reference', 'selfplay', 'mixed-reference'] | None = None
     training_games: int | None = Field(default=None, ge=1, le=16)
     resume: bool = False
 
@@ -122,24 +122,32 @@ def start(options: StartOptions):
                     '--validation-every', str(settings['validation_every']),
                     '--sensor-version', str(saved_sensor_version),
                     '--sensor-chunk', str(saved_sensor_chunk)]
-        if saved_mode == 'selfplay':
+        if saved_mode in ('selfplay', 'mixed-reference'):
             command += ['--opponent-mode', saved_mode, '--training-games', str(saved_games)]
     else:
         mode = options.opponent_mode or 'reference'
-        games = options.training_games or 5
+        games = (options.training_games if options.training_games is not None else
+                 2 if mode == 'mixed-reference' else 5)
+        maps = (32 if mode == 'mixed-reference' and 'maps' not in options.model_fields_set
+                else options.maps)
+        seconds = (45 if mode == 'mixed-reference' and 'seconds' not in options.model_fields_set
+                   else options.seconds)
         try:
             protocol_settings(mode, games)
         except ValueError as exc:
             raise fastapi.HTTPException(400, str(exc)) from exc
         if mode == 'selfplay' and options.maps * options.worms != options.population:
             raise fastapi.HTTPException(400, 'Self-play exige maps × worms = population (256 génomes, 16 vers : 16 cartes).')
+        if mode == 'mixed-reference' and (options.population != 256 or maps != 32
+                or options.worms != 16 or seconds != 45):
+            raise fastapi.HTTPException(400, 'Mixed-reference exige 256 génomes, 32 cartes, 16 vers et des parties de 45 secondes.')
         run = RUNS / datetime.now().strftime('%Y%m%d-%H%M%S-%f')
         run.mkdir(parents=True)
-        command += ['--maps', str(options.maps), '--worms', str(options.worms), '--population', str(options.population),
-                    '--seconds', str(options.seconds), '--sensor-version', options.sensor_version or 'legacy-v1']
+        command += ['--maps', str(maps), '--worms', str(options.worms), '--population', str(options.population),
+                    '--seconds', str(seconds), '--sensor-version', options.sensor_version or 'legacy-v1']
         if options.sensor_chunk is not None:
             command += ['--sensor-chunk', str(options.sensor_chunk)]
-        if mode == 'selfplay':
+        if mode in ('selfplay', 'mixed-reference'):
             command += ['--opponent-mode', mode, '--training-games', str(games)]
     current = run
     command += ['--run', str(run), '--generations', str(options.generations), '--device', options.device]

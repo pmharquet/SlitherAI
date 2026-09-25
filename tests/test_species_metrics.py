@@ -59,6 +59,27 @@ def test_species_telemetry_matches_actual_stagnation_and_does_not_change_evoluti
     assert population.species.genome_to_species == baseline.species.genome_to_species
 
 
+def test_rank_stagnation_telemetry_does_not_label_ranks_as_anchor_fitness(tmp_path):
+    population = population_with_three_stagnant_species()
+    population.config.stagnation_config.progress_metric = 'rank_percentile'
+    for key, genome in population.population.items():
+        genome.stagnation_fitness = (key + .5) / len(population.population)
+        genome.anchor_fitness = 1000. + key
+    expected_stagnation = {
+        sid: sum(g.stagnation_fitness for g in species.members.values()) / len(species.members)
+        for sid, species in population.species.species.items()}
+    reporter = SpeciesReporter(tmp_path, population)
+    population.add_reporter(reporter)
+    population.run(evaluate, 1)
+
+    data = json.loads((tmp_path / 'species.json').read_text())
+    assert data['parameters']['stagnation_metric'] == 'rank_percentile'
+    for row in data['latest']['rows']:
+        assert row['anchor_mean'] is None
+        assert row['selection_score_mean'] == row['mean']
+        assert row['stagnation_mean'] == pytest.approx(expected_stagnation[row['id']])
+
+
 def test_checkpoints_exclude_live_reporters_and_preserve_species_indexer(tmp_path):
     population = population_with_three_stagnant_species()
     runtime = neat.reporting.BaseReporter()

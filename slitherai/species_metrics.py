@@ -24,10 +24,12 @@ class SpeciesReporter(neat.reporting.BaseReporter):
         self.run = Path(run)
         self.population = population
         config = population.config
+        self.stagnation_metric = getattr(config.stagnation_config, 'progress_metric', 'raw')
         self.parameters = dict(compatibility_threshold=config.species_set_config.compatibility_threshold,
             max_stagnation=config.stagnation_config.max_stagnation,
             species_elitism=config.stagnation_config.species_elitism,
             species_fitness_func=config.stagnation_config.species_fitness_func,
+            stagnation_metric=self.stagnation_metric,
             elitism=config.reproduction_config.elitism,
             survival_threshold=config.reproduction_config.survival_threshold)
         for key in ('progress_window', 'progress_delta', 'max_removals'):
@@ -81,9 +83,15 @@ class SpeciesReporter(neat.reporting.BaseReporter):
         for sid, s in sorted(self.references.items()):
             members = list(s.members.values())
             scores = [float(g.fitness) for g in members]
+            selection_mean = statistics.mean(scores)
+            stagnation_mean = (statistics.mean(float(g.stagnation_fitness) for g in members)
+                               if self.stagnation_metric == 'rank_percentile'
+                               else statistics.mean(getattr(g, 'anchor_fitness', g.fitness) for g in members))
             self.evaluated['rows'].append(dict(id=sid, size=len(members), created=s.created,
-                age=max(0, self.generation-s.created), best=max(scores), mean=statistics.mean(scores),
-                anchor_mean=statistics.mean(getattr(g, 'anchor_fitness', g.fitness) for g in members),
+                age=max(0, self.generation-s.created), best=max(scores), mean=selection_mean,
+                anchor_mean=(None if self.stagnation_metric == 'rank_percentile' else stagnation_mean),
+                selection_score_mean=selection_mean,
+                stagnation_mean=stagnation_mean,
                 food_gain=statistics.mean(getattr(g, 'behavior', {}).get('food_gain', 0.) for g in members),
                 survival=statistics.mean(getattr(g, 'behavior', {}).get('alive', 0.) for g in members),
                 hidden=statistics.mean(sum(k not in config.genome_config.output_keys for k in g.nodes) for g in members),

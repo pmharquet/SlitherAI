@@ -79,20 +79,33 @@ class WindowedStagnation(neat.DefaultStagnation):
             ConfigParameter('species_fitness_func', str, 'mean'),
             ConfigParameter('max_stagnation', int, 30), ConfigParameter('species_elitism', int, 4),
             ConfigParameter('progress_window', int, 5), ConfigParameter('progress_delta', float, .25),
-            ConfigParameter('max_removals', int, 1)])
+            ConfigParameter('max_removals', int, 1), ConfigParameter('progress_metric', str, 'raw')])
 
     def update(self, species_set, generation):
         c = self.stagnation_config
-        if c.progress_window < 2 or c.max_removals < 1 or c.species_fitness_func != 'mean':
+        metric = getattr(c, 'progress_metric', 'raw')
+        if (c.progress_window < 2 or c.max_removals < 1 or c.species_fitness_func != 'mean'
+                or metric not in ('raw', 'rank_percentile')):
             raise ValueError('Windowed stagnation requires mean fitness and a window >= 2')
         ranked = []
         for sid, species in sorted(species_set.species.items()):
-            # Anchor scores use unchanged scenarios/opponents. The changing
-            # generalization episode does not reset or expire stagnation records.
-            species.fitness = statistics.mean(getattr(g, 'anchor_fitness', g.fitness) for g in species.members.values())
+            # Raw mode preserves the reference and self-play-v1 behavior. In
+            # self-play-v2, rank scores drive only the progress clock; raw
+            # selection fitness still ranks species and allocates offspring.
+            if metric == 'rank_percentile':
+                species.fitness = statistics.mean(g.fitness for g in species.members.values())
+                progress_history = getattr(species, 'stagnation_history', [])
+                progress_history.append(statistics.mean(
+                    float(g.stagnation_fitness) for g in species.members.values())
+                )
+                species.stagnation_history = progress_history
+            else:
+                species.fitness = statistics.mean(
+                    getattr(g, 'anchor_fitness', g.fitness) for g in species.members.values())
+                progress_history = species.fitness_history
             species.adjusted_fitness = None
             species.fitness_history.append(species.fitness)
-            history, window = species.fitness_history, c.progress_window
+            history, window = progress_history, c.progress_window
             species.recent_score = statistics.median(history[-window:])
             species.progress_delta = None
             if len(history) == window:
