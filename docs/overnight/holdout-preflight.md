@@ -1,45 +1,67 @@
 # Préflight de l’épreuve finale réservée
 
-## Smoke CPU effectué
+## Smokes CPU
 
-Commande très courte exécutée sur le run de référence, seed non réservée `314159`, une carte et `0,1` seconde simulée :
+Un premier smoke précédent a validé le CLI avec le modèle initial, un payload et les contrôleurs, sur une seed non réservée, 1 carte × 0,1 s. Il n’est pas une mesure de politique.
+
+Le préflight ciblé demandé a rescored les deux candidats prévus sur le run de référence, CPU seulement, avec seed non réservée `2123456`, 1 carte × 0,1 s :
 
 ```powershell
 .\.venv\Scripts\python.exe -m slitherai.evaluate_holdout `
   --run runs\20260924-163112-852097 `
-  --candidate-payload best-validation=runs\20260924-163112-852097\best-validation.pkl `
-  --seed 314159 --maps 1 --seconds 0.1 --device cpu `
-  --output-dir runs\20260924-163112-852097\analysis\holdout-preflight-smoke
+  --candidate-generation 14 `
+  --candidate-payload "best-validation=runs\20260924-163112-852097\analysis\holdout-preflight-g15-g25-20260925-020829\best-validation-current-snapshot.pkl" `
+  --seed 2123456 --maps 1 --seconds 0.1 --device cpu `
+  --output-dir runs\20260924-163112-852097\analysis\holdout-preflight-g15-g25-20260925-020829
 ```
 
-Résultat : environ 3,8 s, avec les politiques `initial`, `best-validation`, `heuristic` et `circle`. Le modèle initial a été reconstruit avec l’argmax de l’épisode 0000, puis retrouvé dans `checkpoint-0` (génération 0, génome 76). Le payload de validation a été chargé comme génération 14, génome 2867, SHA-256 `682fd88f3e4c1d8a7adaa57bdb2654c3d7dc9c709289fc043200394c42d70731`. Le smoke a utilisé Python 3.12.6, PyTorch 2.8.0+cu129 et NEAT-Python 1.1.0. Le JSON et le Markdown sont sous `analysis/holdout-preflight-smoke/` ; les settings et checkpoints du run n’ont pas été modifiés.
+Le JSON a confirmé ces politiques et identités :
 
-Ce smoke vérifie le chargement des sources, la compatibilité du schéma, la simulation CPU, les contrôleurs et l’écriture de la provenance. Une carte d’un pas ne mesure pas la performance des politiques et n’est pas une validation.
+| Politique | Génération stockée | Génome | Origine |
+|---|---:|---:|---|
+| `initial` | 0 | 76 | champion de l’épisode initial |
+| `generation-14` (G15) | 14 | 2867 | champion rescored depuis `checkpoint-14` et l’épisode 14 |
+| `best-validation` (G25) | 24 | 4107 | payload de validation figé pour ce smoke |
+| `heuristic` | — | — | contrôleur intégré |
+| `circle` | — | — | contrôleur intégré |
 
-## Figer le candidat avant la graine réservée
+Le snapshot de payload a le SHA-256 `cf33179dbc04b1431577c35f30c23c657f710d606c7c7bd48aa9f1c91681c5`. Les fichiers de résultat sont dans `runs/20260924-163112-852097/analysis/holdout-preflight-g15-g25-20260925-020829/`. Le smoke a vérifié le chargement, la compatibilité et les cinq entrées de politique ; 1 carte et 0,1 s ne mesurent ni la performance ni une validation.
 
-La sélection doit être faite sur les validations existantes avant de lancer le test. Au snapshot du préflight, le meilleur payload du run de référence est `best-validation.pkl`, génération 14 / génome 2867, sélectionné sur 32 cartes et 90 s à la seed de validation `938271` (fitness moyenne `18,698 ± 3,017`). Si une validation ultérieure remplace ce champion, choisir le meilleur payload validé à ce moment-là avant le holdout.
+## Candidats et règle de sélection
 
-Comme le run de référence peut encore écrire `best-validation.pkl`, copier le payload sélectionné dans un nom horodaté avant l’épreuve et calculer son SHA-256. L’entraîneur écrit d’abord un temporaire puis remplace le payload ; une fois la copie faite, l’évaluateur ne lira que ce fichier immuable. Son JSON consignera le chemin, la génération, l’ID de génome et le hash réellement scorés, ce qui permet de vérifier la sélection copiée même si la validation du run écrit ensuite un nouveau best. Faire cette copie après que le choix du modèle est arrêté ; ne pas comparer plusieurs snapshots sur le seed final.
+G15 (génération interne 14, génome 2867) est le candidat présélectionné depuis l’historique. L’autre candidat sera l’unique payload `best-validation.pkl` retenu au moment où la décision finale est prise. Au préflight ci-dessus, ce payload correspond à G25 (génération interne 24, génome 4107), choisi sur les validations existantes à seed `938271`, 32 cartes × 90 s (fitness 21,263 ± 2,503). Il peut évoluer si une validation ultérieure le remplace ; le choix doit alors être arrêté avant le holdout.
 
-## Commande finale préparée — à lancer une seule fois
+Après avoir arrêté le choix, copier ce payload dans un nom horodaté, comparer les hashes source et copie, puis l’évaluer uniquement depuis cette copie immuable. L’épreuve finale compare G15 et ce payload figé ; le CLI ajoute aussi le modèle initial et les contrôleurs `heuristic` et `circle`. Exécuter une seule invocation avec la seed réservée. Ne pas comparer un autre payload après avoir consulté le résultat.
 
-La graine finale `741852963` n’a pas été utilisée par le préflight. Une fois l’entraînement terminé et le candidat choisi, exécuter ces commandes PowerShell. Elles copient le meilleur payload validé du run de référence vers un fichier horodaté, impriment son hash, puis comparent ce candidat au modèle initial et aux deux contrôleurs intégrés. L’évaluateur ne modifie ni entraînement ni configuration.
+## Commande finale préparée — ne pas exécuter avant le choix
+
+La seed finale `741852963` n’a pas été utilisée dans les smokes. Quand la référence et la sélection sont prêtes, exécuter le bloc ci-dessous une seule fois. Il refuse un répertoire de sortie déjà existant ou un payload qui change pendant sa copie. Il recalcule les deux hash avant le lancement et conserve le payload figé avec le résultat.
 
 ```powershell
+$ErrorActionPreference = 'Stop'
 $run = 'runs\20260924-163112-852097'
 $finalDir = Join-Path $run 'analysis\holdout-final'
-New-Item -ItemType Directory -Force -Path $finalDir | Out-Null
+if (Test-Path -LiteralPath $finalDir) { throw "Final output already exists: $finalDir" }
+New-Item -ItemType Directory -Path $finalDir | Out-Null
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $candidate = Join-Path $finalDir "best-validation-selected-$stamp.pkl"
-Copy-Item -LiteralPath (Join-Path $run 'best-validation.pkl') -Destination $candidate
-Get-FileHash -Algorithm SHA256 -LiteralPath $candidate
+$source = Join-Path $run 'best-validation.pkl'
+$sourceHashBefore = (Get-FileHash -Algorithm SHA256 -LiteralPath $source).Hash.ToLowerInvariant()
+Copy-Item -LiteralPath $source -Destination $candidate
+$candidateHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $candidate).Hash.ToLowerInvariant()
+$sourceHashAfter = (Get-FileHash -Algorithm SHA256 -LiteralPath $source).Hash.ToLowerInvariant()
+if ($sourceHashBefore -ne $candidateHash -or $sourceHashBefore -ne $sourceHashAfter) {
+  throw 'best-validation changed during snapshot; do not run the reserved holdout.'
+}
+"Frozen payload SHA-256: $candidateHash"
 
 .\.venv\Scripts\python.exe -m slitherai.evaluate_holdout `
   --run $run `
+  --candidate-generation 14 `
   --candidate-payload "best-validation=$candidate" `
   --seed 741852963 --maps 64 --seconds 90 --device cuda `
   --output-dir $finalDir
+if ($LASTEXITCODE -ne 0) { throw "evaluate_holdout exited $LASTEXITCODE" }
 ```
 
-Le JSON final conserve les mesures fraîches par carte, les écarts appariés, le protocole, la récompense, le schéma, le hash de configuration, l’identité/hash du candidat figé et les hash du code exécuté. La seed est réservée à cette invocation. Ne pas choisir un autre candidat après avoir consulté ce résultat sans signaler la sélection sur test ; ce même holdout ne fournirait alors plus une mesure indépendante du gagnant.
+Le JSON final enregistre les scores frais par carte, différences appariées, protocole, récompense, schéma, configuration, identité et hash de chaque candidat, et hashes du code évaluateur. Les résultats servent une seule fois ; aucun choix de gagnant ou réglage postérieur n’est reporté comme s’il avait été prédit par cette épreuve.
