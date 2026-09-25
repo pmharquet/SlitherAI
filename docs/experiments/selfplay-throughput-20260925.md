@@ -22,3 +22,13 @@ La suite indépendante de comparaison est réservée maintenant, **avant** de re
 - Smoke CUDA : 256 sorties finies sur 16 arènes × 16 vers, une étape.
 - Tableau de bord local : `http://127.0.0.1:8765/`, run A affiché; le serveur connaît et peut reprendre le protocole versionné.
 - Code du protocole : commit local `d6dd0d3`; aucun push.
+
+## Résultats A/B et épreuve réservée
+
+Le run A a terminé 5 générations : 781,84 s d'évaluation cumulée, soit 156,37 s/génération en moyenne. Son meilleur validé reste le génome initial 8808 (19,389 sur les 32 cartes de sélection); la validation G5 vaut 14,210. Le run B a terminé 20 générations en 944,6 s de temps réel, soit 47,23 s/génération avec les validations comprises. Son évaluation prend 32,00 s/génération en moyenne. Ses validations G1/G5/G10/G15/G20 valent respectivement 19,389 / 16,971 / 6,811 / 17,883 / 8,236. Son meilleur validé est aussi le génome initial 8808. Les fichiers pickle A/B diffèrent par leurs métadonnées, mais contiennent le même génome (SHA-256 canonique `9dcee8a5d57568b853822f1648b7f450a48fcd74c7efd2446a390f1cb8421142`).
+
+La suite indépendante pré-déclarée seed `64821973`, 64 cartes × 90 s a été exécutée une fois après les deux pilotes. Résultat : G45 = **24,387 ± 1,925** (erreur type), A = B = initial = **19,571 ± 1,792**. Différence appariée G45 − A/B = **+4,816**, intervalle bootstrap 95 % calculé [0,674 ; 8,844] pour G45 contre initial. Les sorties détaillées et les sources figées sont dans `runs/20260925-selfplay-comparison/`. L'auto-jeu pur a retrouvé le débit ancien mais n'a pas amélioré le meilleur modèle. Le G45 figé reste le modèle à conserver. Cette suite est maintenant consommée et ne doit pas servir à régler C.
+
+## Expérience C pré-déclarée
+
+Le prochain pilote testera l'évaluation de plusieurs candidats dans une arène avec des adversaires de référence fixes. Le modèle de départ sera `checkpoint-44` du run lent, qui contient le génome G45 `8270`; les pilotes A/B partaient de `checkpoint-47`, dont le meilleur de population évalué sur la validation fixe était inférieur. Config prévue : population 256, 32 cartes × 16 vers, 8 candidats NEAT et 8 adversaires fixes par carte, chaque candidat une fois par jeu, 2 jeux × 45 s/génération, 10 générations, capteur `legacy-v1`, récompense `growth-v2`, validation32 cartes ×90 s aux G1/G5/G10. Le débit et la validation seront comparés aux résultats précédents sans prétendre comparer directement les scores de sélection entre protocoles. Si une amélioration apparaît, une nouvelle suite indépendante est réservée maintenant : seed `91837261`, 64 cartes ×90 s, même configuration physique, confrontation appariée G45 contre le meilleur C figé. Aucune épreuve indépendante ne sera répétée pour choisir un autre checkpoint.
