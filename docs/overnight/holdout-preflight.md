@@ -25,7 +25,22 @@ Le JSON a confirmé ces politiques et identités :
 | `heuristic` | — | — | contrôleur intégré |
 | `circle` | — | — | contrôleur intégré |
 
-Le snapshot de payload a le SHA-256 `cf33179dbc04b1431577c35f30c23c657f710d606c7c7bd48aa9f1c91681c5`. Les fichiers de résultat sont dans `runs/20260924-163112-852097/analysis/holdout-preflight-g15-g25-20260925-020829/`. Le smoke a vérifié le chargement, la compatibilité et les cinq entrées de politique ; 1 carte et 0,1 s ne mesurent ni la performance ni une validation.
+Le snapshot de payload a le SHA-256 `cf33179dbc04b1431577c35f30c23c657f710d606c7c7c7bd48aa9f1c91681c5`. Les fichiers de résultat sont dans `runs/20260924-163112-852097/analysis/holdout-preflight-g15-g25-20260925-020829/`. Le smoke a vérifié le chargement, la compatibilité et les cinq entrées de politique ; 1 carte et 0,1 s ne mesurent ni la performance ni une validation.
+
+## Smoke CUDA effectué
+
+Une seconde smoke a exécuté les mêmes deux candidats, sur CUDA, avec une graine distincte non réservée (`2718281`), toujours 1 carte × 0,1 s :
+
+```powershell
+.\.venv\Scripts\python.exe -m slitherai.evaluate_holdout `
+  --run runs\20260924-163112-852097 `
+  --candidate-generation 14 `
+  --candidate-payload "best-validation=runs\20260924-163112-852097\analysis\holdout-preflight-g15-g25-20260925-020829\best-validation-current-snapshot.pkl" `
+  --seed 2718281 --maps 1 --seconds 0.1 --device cuda `
+  --output-dir runs\20260924-163112-852097\analysis\holdout-gpu-smoke-20260925-043646
+```
+
+La sortie contient `initial` (ID 76), G15/ID2867, G25/ID4107 et les contrôleurs `heuristic` et `circle`. Le JSON consigne `device=cuda`, Python `3.12.6`, PyTorch `2.8.0+cu129` et 8 empreintes SHA-256 de fichiers runtime, toutes valides. La carte est une NVIDIA GeForce RTX 4060 Laptop GPU ; juste après le smoke, `nvidia-smi` lisait 353/8188 MiB et 29 % d’utilisation. L’API confirmait la référence active, génération 35/50, sur le run prévu. Le résultat JSON/Markdown est dans `analysis/holdout-gpu-smoke-20260925-043646/`. Il s’agit seulement d’un smoke de chargement et d’exécution CUDA, pas d’un score de politique.
 
 ## Candidats et règle de sélection
 
