@@ -85,8 +85,8 @@ def test_mixed_reference_v2_schedule_keeps_historical_assignments():
 
 
 def test_mixed_reference_v3_schedule_is_balanced_and_rotates_seats_across_generations():
-    games = mixed_reference_scenarios(81, 7)
-    assert games == mixed_reference_scenarios(81, 7)
+    games = mixed_reference_scenarios(81, 7, mixed_version=3)
+    assert games == mixed_reference_scenarios(81, 7, mixed_version=3)
     assert games[0]['seed'] != games[1]['seed']
     assert games[0]['candidate_seats'] == [12, 13, 14, 15]
     assert games[1]['candidate_seats'] == [4, 5, 6, 7]
@@ -104,9 +104,39 @@ def test_mixed_reference_v3_schedule_is_balanced_and_rotates_seats_across_genera
     assert cohorts[0] != cohorts[1]
     assert all(len(seats) == 2 and seats[0] != seats[1]
                for seats in seats_by_genome.values())
-    next_generation = mixed_reference_scenarios(81, 8)
+    next_generation = mixed_reference_scenarios(81, 8, mixed_version=3)
     assert next_generation[0]['candidate_seats'] == [0, 1, 2, 3]
     assert next_generation[1]['candidate_seats'] == [8, 9, 10, 11]
+
+
+def test_mixed_reference_v4_rotates_candidates_and_balances_all_sixteen_seats():
+    games = mixed_reference_scenarios(81, 7, training_games=4, mixed_version=4)
+    assert games == mixed_reference_scenarios(81, 7, training_games=4, mixed_version=4)
+    assert [game['candidate_seats'] for game in games] == [
+        [12, 13, 14, 15], [0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11]]
+    cohorts = []
+    seats_by_genome = {genome: [] for genome in range(256)}
+    seat_counts = np.zeros(16, dtype=np.int64)
+    for game in games:
+        assignment = np.asarray(game['assignment']).reshape(64, 16)
+        assert np.all((assignment >= 0).sum(axis=1) == 4)
+        assert np.all((assignment == -1).sum(axis=1) == 12)
+        assert sorted(assignment[assignment >= 0].tolist()) == list(range(256))
+        cohorts.append({frozenset(row[row >= 0].tolist()) for row in assignment})
+        for row in assignment:
+            for genome in row[row >= 0]:
+                seat = int(np.flatnonzero(row == genome)[0])
+                seats_by_genome[int(genome)].append(seat)
+                seat_counts[seat] += 1
+    assert all(len(seats) == 4 and len(set(seats)) == 4
+               for seats in seats_by_genome.values())
+    np.testing.assert_array_equal(seat_counts, np.full(16, 64))
+    assert len({game['seed'] for game in games}) == 4
+    assert all(cohorts[index] != cohorts[index + 1] for index in range(3))
+    next_generation = mixed_reference_scenarios(
+        81, 8, training_games=4, mixed_version=4)
+    assert [game['candidate_seats'] for game in next_generation] == [
+        [0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11], [12, 13, 14, 15]]
 
 
 def test_mixed_reference_metrics_remap_to_candidate_genomes_only():
@@ -120,7 +150,7 @@ def test_mixed_reference_metrics_remap_to_candidate_genomes_only():
         remap_mixed_slot_values(slot_values, [0., -1., 1., -1., 2., -1., 3., -1], 4)
 
 
-def test_mixed_reference_evaluation_scores_each_candidate_from_two_games(tmp_path, monkeypatch):
+def test_mixed_reference_v4_evaluation_scores_each_candidate_from_four_games(tmp_path, monkeypatch):
     from slitherai import train as train_module
 
     torch.set_num_threads(2)
@@ -156,12 +186,12 @@ def test_mixed_reference_evaluation_scores_each_candidate_from_two_games(tmp_pat
 
     monkeypatch.setattr(train_module, 'play_mixed_population_episode', fake_mixed_episode)
     trainer.evaluate(genomes, neat_config)
-    schedule = mixed_reference_scenarios(81, 0)
+    schedule = mixed_reference_scenarios(81, 0, training_games=4, mixed_version=4)
     assert [seed for seed, _ in calls] == [game['seed'] for game in schedule]
     for (_, observed), game in zip(calls, schedule):
         np.testing.assert_array_equal(observed, game['assignment'])
 
-    expected = np.arange(256, dtype=np.float64) + 50.
+    expected = np.arange(256, dtype=np.float64) + 150.
     expected_ranks = midrank_percentiles(expected)
     np.testing.assert_allclose([genome.fitness for _, genome in genomes], expected)
     np.testing.assert_allclose([genome.stagnation_fitness for _, genome in genomes], expected_ranks)
@@ -170,11 +200,11 @@ def test_mixed_reference_evaluation_scores_each_candidate_from_two_games(tmp_pat
                for index, (_, genome) in enumerate(genomes))
     episode = json.loads((tmp_path / 'episodes' / 'generation-0000.json').read_text())
     assert episode['opponent_mode'] == 'mixed-reference'
-    assert episode['protocol'] == 'mixed-reference-v3'
-    assert episode['aggregation'] == 'arithmetic_mean_two_games'
+    assert episode['protocol'] == 'mixed-reference-v4'
+    assert episode['aggregation'] == 'arithmetic_mean_four_games'
     assert trainer.evaluation_metrics['candidates_per_arena'] == 4
     assert trainer.evaluation_metrics['references_per_arena'] == 12
-    assert all(row == [float(index), float(index + 100)]
+    assert all(row == [float(index + trial * 100) for trial in range(4)]
                for index, row in enumerate(episode['game_scores']))
 
     score_transform[:] = [9., 71.]
@@ -186,7 +216,7 @@ def test_mixed_reference_evaluation_scores_each_candidate_from_two_games(tmp_pat
 def test_mixed_preview_uses_compact_network_slots_and_marks_heuristics(tmp_path):
     config = SimConfig(maps=64, worms=16, foods=8, body_points=8, preys=0, sensor_chunk=8)
     trainer = Trainer(config, tmp_path, 'cpu', opponent_mode='mixed-reference')
-    schedule = mixed_reference_scenarios(91, 0)
+    schedule = mixed_reference_scenarios(91, 0, training_games=4, mixed_version=4)
     assignment = np.asarray(schedule[0]['assignment'], dtype=np.int64)
     world_slots = np.flatnonzero(assignment >= 0).tolist()
 
@@ -329,6 +359,7 @@ def test_mixed_reference_layout_is_fixed_to_the_pilot_protocol():
     assert validate_mixed_reference_layout(legacy_config, 256, 2, mixed_version=1) == 32
     assert validate_mixed_reference_layout(legacy_config, 256, 2, mixed_version=2) == 32
     assert validate_mixed_reference_layout(config, 256, 2, mixed_version=3) == 64
+    assert validate_mixed_reference_layout(config, 256, 4, mixed_version=4) == 64
     with pytest.raises(ValueError, match='Mixed-reference v3 requires'):
         validate_mixed_reference_layout(dataclasses.replace(config, maps=32), 256, 2, mixed_version=3)
     with pytest.raises(ValueError, match='Mixed-reference v3 requires'):
@@ -336,6 +367,12 @@ def test_mixed_reference_layout_is_fixed_to_the_pilot_protocol():
     with pytest.raises(ValueError, match='sensor_chunk=8'):
         validate_mixed_reference_layout(dataclasses.replace(config, sensor_chunk=4), 256, 2,
                                         mixed_version=3)
+    with pytest.raises(ValueError, match='Mixed-reference v4 requires'):
+        validate_mixed_reference_layout(dataclasses.replace(config, maps=32), 256, 4,
+                                        mixed_version=4)
+    with pytest.raises(ValueError, match='sensor_chunk=8'):
+        validate_mixed_reference_layout(dataclasses.replace(config, sensor_chunk=4), 256, 4,
+                                        mixed_version=4)
 
 
 def test_selfplay_protocol_refuses_reference_resume_but_supports_same_mode_resume(
@@ -461,7 +498,7 @@ def test_mixed_reference_v1_resume_keeps_45_seconds_under_v2_default(tmp_path, m
     config = SimConfig(maps=32, worms=16, foods=8, body_points=8, preys=0)
     run = tmp_path / 'mixed-v1-resume'
     first = Trainer(config, run, 'cpu', seed=37, validation_every=5,
-                    opponent_mode='mixed-reference')
+                    opponent_mode='mixed-reference', training_games=2)
     first.train(256, 1, seconds=None)
     saved = json.loads((run / 'settings.json').read_text())
     assert saved['protocol'] == base_protocol_settings(
@@ -470,7 +507,7 @@ def test_mixed_reference_v1_resume_keeps_45_seconds_under_v2_default(tmp_path, m
 
     monkeypatch.setattr(train_module, 'protocol_settings', base_protocol_settings)
     resumed = Trainer(config, run, 'cpu', seed=37, validation_every=5,
-                      opponent_mode='mixed-reference')
+                      opponent_mode='mixed-reference', training_games=2)
     assert resumed.active_protocol['version'] == 'mixed-reference-v3'
     resumed.train(256, 1, seconds=None, resume=run / 'checkpoint-1')
     assert resumed.active_protocol == saved['protocol']

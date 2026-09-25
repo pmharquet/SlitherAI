@@ -1,7 +1,8 @@
 import pytest
 from fastapi import HTTPException
 
-from slitherai.protocol import (mixed_reference_protocol_version, protocol_settings)
+from slitherai.protocol import (mixed_reference_protocol_version, protocol_settings,
+                                recognized_protocol)
 from slitherai import server
 from slitherai.server import saved_protocol_options
 
@@ -68,6 +69,30 @@ def test_mixed_reference_protocol_is_versioned_and_strict():
         protocol_settings('mixed-reference', 1)
 
 
+def test_mixed_reference_v4_uses_four_games_and_preserves_v3_record():
+    v3 = protocol_settings('mixed-reference', 2)
+    assert v3['version'] == 'mixed-reference-v3'
+    assert v3['games_per_genome'] == 2
+    assert v3['matchmaking'] == 'cohort_shuffle_four_seat_generation_rotation_v1'
+
+    v4 = protocol_settings('mixed-reference', 4)
+    assert v4['version'] == 'mixed-reference-v4'
+    assert v4['population'] == 256
+    assert v4['maps_per_game'] == 64 and v4['worms_per_map'] == 16
+    assert v4['candidate_slots_per_map'] == 4 and v4['reference_slots_per_map'] == 12
+    assert v4['games_per_genome'] == 4 and v4['seconds_per_game'] == 90
+    assert v4['sensor_chunk'] == 8
+    assert v4['aggregate'] == 'arithmetic_mean_four_games'
+    assert v4['stagnation_metric'] == 'within_generation_midrank_percentile'
+    assert v4['validation_maps'] == 32 and v4['validation_seconds'] == 90
+    assert v4['validation_every'] == 5
+    assert saved_protocol_options({'protocol': v4}) == ('mixed-reference', 4)
+    assert mixed_reference_protocol_version(v4) == 4
+    assert recognized_protocol(v4) == ('mixed-reference', 4)
+    with pytest.raises(ValueError, match='exactly 4'):
+        protocol_settings('mixed-reference', 2, mixed_version=4)
+
+
 def test_server_rejects_selfplay_shape_before_creating_run(monkeypatch):
     monkeypatch.setattr(server, 'process', None)
     with pytest.raises(HTTPException) as error:
@@ -84,7 +109,7 @@ def test_server_rejects_mixed_reference_with_nonpilot_geometry(monkeypatch):
     assert 'Mixed-reference' in error.value.detail
 
 
-def test_server_starts_new_mixed_reference_with_v3_defaults(tmp_path, monkeypatch):
+def test_server_starts_new_mixed_reference_with_v4_defaults(tmp_path, monkeypatch):
     monkeypatch.setattr(server, 'process', None)
     monkeypatch.setattr(server, 'current', None)
     monkeypatch.setattr(server, 'RUNS', tmp_path)
@@ -106,10 +131,14 @@ def test_server_starts_new_mixed_reference_with_v3_defaults(tmp_path, monkeypatc
     assert command[command.index('--seconds') + 1] == '90'
     assert command[command.index('--maps') + 1] == '64'
     assert command[command.index('--sensor-chunk') + 1] == '8'
+    assert command[command.index('--training-games') + 1] == '4'
 
 
-@pytest.mark.parametrize(('version', 'duration'), [(1, 45), (2, 90)])
-def test_server_resume_preserves_mixed_v1_v2_durations(tmp_path, monkeypatch, version, duration):
+@pytest.mark.parametrize(('version', 'games', 'maps', 'chunk', 'duration'),
+                         [(1, 2, 32, 4, 45), (2, 2, 32, 4, 90),
+                          (3, 2, 64, 8, 90), (4, 4, 64, 8, 90)])
+def test_server_resume_preserves_mixed_protocol_version(
+        tmp_path, monkeypatch, version, games, maps, chunk, duration):
     import dataclasses
     from slitherai.config import SimConfig
 
@@ -117,11 +146,12 @@ def test_server_resume_preserves_mixed_v1_v2_durations(tmp_path, monkeypatch, ve
     run = tmp_path / f'mixed-v{version}'
     run.mkdir()
     (run / 'checkpoint-7').write_bytes(b'checkpoint marker')
-    config = dataclasses.asdict(SimConfig(maps=32, worms=16))
+    config = dataclasses.asdict(SimConfig(maps=maps, worms=16, sensor_chunk=chunk))
     from slitherai.io import write_json
     write_json(run / 'settings.json', dict(
-        protocol=protocol_settings('mixed-reference', 2, mixed_version=version),
-        config=config, population=256, seconds=duration, seed=37, validation_every=5))
+        protocol=protocol_settings('mixed-reference', games, mixed_version=version),
+        config=config, population=256, training_games=games,
+        seconds=duration, seed=37, validation_every=5))
     monkeypatch.setattr(server, 'current', run)
     captured = {}
 
@@ -138,4 +168,14 @@ def test_server_resume_preserves_mixed_v1_v2_durations(tmp_path, monkeypatch, ve
     server.start(server.StartOptions(resume=True))
     command = captured['command']
     assert command[command.index('--seconds') + 1] == str(duration)
+    assert command[command.index('--maps') + 1] == str(maps)
+    assert command[command.index('--sensor-chunk') + 1] == str(chunk)
+    assert command[command.index('--training-games') + 1] == str(games)
     assert command[command.index('--opponent-mode') + 1] == 'mixed-reference'
+
+
+@pytest.mark.parametrize(('version', 'games'), [(1, 2), (2, 2), (3, 2), (4, 4)])
+def test_all_mixed_protocol_versions_are_recognized(version, games):
+    protocol = protocol_settings('mixed-reference', games, mixed_version=version)
+    assert recognized_protocol(protocol) == ('mixed-reference', games)
+    assert mixed_reference_protocol_version(protocol) == version
