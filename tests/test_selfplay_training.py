@@ -104,6 +104,7 @@ def test_mixed_reference_evaluation_scores_each_candidate_from_two_games(tmp_pat
     config = SimConfig(maps=32, worms=16, foods=8, body_points=8, preys=0)
     trainer = Trainer(config, tmp_path, 'cpu', seed=81, validation_every=5,
                       opponent_mode='mixed-reference')
+    assert trainer.episode_seconds == 90
     assert trainer.stagnation_metric == 'within_generation_midrank_percentile'
     trainer.episode_seconds = .1
     trainer.controls = lambda: {}
@@ -398,3 +399,45 @@ def test_selfplay_v1_checkpoint_resumes_with_historical_raw_stagnation(tmp_path,
     assert resumed.stagnation_metric == 'raw'
     population = neat.Checkpointer.restore_checkpoint(str(run / 'checkpoint-2'))
     assert population.config.stagnation_config.progress_metric == 'raw'
+
+
+def test_mixed_reference_v1_resume_keeps_45_seconds_under_v2_default(tmp_path, monkeypatch):
+    from slitherai import train as train_module
+
+    base_protocol_settings = train_module.protocol_settings
+    monkeypatch.setattr(train_module, 'protocol_settings',
+        lambda mode='reference', training_games=5: base_protocol_settings(
+            mode, training_games, mixed_version=1) if mode == 'mixed-reference'
+            else base_protocol_settings(mode, training_games))
+
+    def fake_evaluate(self, genomes, neat_config):
+        raw_scores = np.asarray([float(key % 17) for key, _ in genomes])
+        ranks = midrank_percentiles(raw_scores)
+        for index, (_, genome) in enumerate(genomes):
+            genome.fitness = float(raw_scores[index])
+            genome.stagnation_fitness = float(ranks[index])
+            genome.behavior = {}
+        self.evaluation_metrics = {'fitness': float(raw_scores.mean())}
+
+    monkeypatch.setattr(Trainer, 'evaluate', fake_evaluate)
+    monkeypatch.setattr(Trainer, 'publish_preview', lambda self, control: None)
+    monkeypatch.setattr(train_module, 'fixed_validation',
+        lambda *args, **kwargs: {'fitness': 1., 'per_map': []})
+    config = SimConfig(maps=32, worms=16, foods=8, body_points=8, preys=0)
+    run = tmp_path / 'mixed-v1-resume'
+    first = Trainer(config, run, 'cpu', seed=37, validation_every=5,
+                    opponent_mode='mixed-reference')
+    first.train(256, 1, seconds=None)
+    saved = json.loads((run / 'settings.json').read_text())
+    assert saved['protocol'] == base_protocol_settings(
+        'mixed-reference', 2, mixed_version=1)
+    assert saved['seconds'] == 45
+
+    monkeypatch.setattr(train_module, 'protocol_settings', base_protocol_settings)
+    resumed = Trainer(config, run, 'cpu', seed=37, validation_every=5,
+                      opponent_mode='mixed-reference')
+    assert resumed.active_protocol['version'] == 'mixed-reference-v2'
+    resumed.train(256, 1, seconds=None, resume=run / 'checkpoint-1')
+    assert resumed.active_protocol == saved['protocol']
+    assert resumed.episode_seconds == 45
+    assert json.loads((run / 'settings.json').read_text())['seconds'] == 45

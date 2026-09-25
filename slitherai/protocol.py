@@ -3,7 +3,8 @@ SELFPLAY_PROTOCOL_V1 = 'population-selfplay-v1'
 SELFPLAY_PROTOCOL = 'population-selfplay-v2'
 SELFPLAY_STAGNATION_WINDOW = 5
 SELFPLAY_STAGNATION_DELTA = .02
-MIXED_REFERENCE_PROTOCOL = 'mixed-reference-v1'
+MIXED_REFERENCE_PROTOCOL_V1 = 'mixed-reference-v1'
+MIXED_REFERENCE_PROTOCOL = 'mixed-reference-v2'
 
 
 def protocol_settings(opponent_mode='reference', training_games=5, selfplay_version=None,
@@ -12,8 +13,9 @@ def protocol_settings(opponent_mode='reference', training_games=5, selfplay_vers
 
     Keep the original dictionary byte-for-byte compatible with existing runs.
     Self-play v2 keeps raw selection fitness and tracks stagnation using
-    within-generation midrank percentiles. Version 1 remains available for
-    exact resume compatibility with existing runs.
+    within-generation midrank percentiles. Mixed-reference v2 keeps its
+    scoring protocol and raises game duration to 90 seconds. Earlier versions
+    remain available for exact resume compatibility with existing runs.
     """
     if opponent_mode == 'reference':
         if training_games != 5:
@@ -44,13 +46,14 @@ def protocol_settings(opponent_mode='reference', training_games=5, selfplay_vers
     if opponent_mode == 'mixed-reference':
         if training_games != 2:
             raise ValueError('Mixed-reference requires exactly two training games')
-        version = 1 if mixed_version is None else mixed_version
-        if version != 1:
+        version = 2 if mixed_version is None else mixed_version
+        if version not in (1, 2):
             raise ValueError(f'Unsupported mixed-reference protocol version: {version}')
-        return dict(version=MIXED_REFERENCE_PROTOCOL, opponent_mode='mixed-reference',
+        return dict(version=(MIXED_REFERENCE_PROTOCOL_V1 if version == 1
+                             else MIXED_REFERENCE_PROTOCOL), opponent_mode='mixed-reference',
                     population=256, maps_per_game=32, worms_per_map=16,
                     candidate_slots_per_map=8, reference_slots_per_map=8,
-                    games_per_genome=2, seconds_per_game=45,
+                    games_per_genome=2, seconds_per_game=(45 if version == 1 else 90),
                     aggregate='arithmetic_mean_two_games',
                     opponents='fixed_heuristic_policy',
                     matchmaking='cohort_shuffle_eight_seat_rotation_v1',
@@ -78,8 +81,9 @@ def recognized_protocol(saved):
             pass
     if isinstance(saved, dict) and saved.get('opponent_mode') == 'mixed-reference':
         try:
-            if saved == protocol_settings('mixed-reference', 2, mixed_version=1):
-                return 'mixed-reference', 2
+            for version in (1, 2):
+                if saved == protocol_settings('mixed-reference', 2, mixed_version=version):
+                    return 'mixed-reference', 2
         except ValueError:
             pass
     return None
@@ -101,7 +105,10 @@ def selfplay_protocol_version(saved):
 
 def mixed_reference_protocol_version(saved):
     """Return the exact supported mixed-reference version, else None."""
-    try:
-        return 1 if saved == protocol_settings('mixed-reference', 2, mixed_version=1) else None
-    except ValueError:
-        return None
+    for version in (1, 2):
+        try:
+            if saved == protocol_settings('mixed-reference', 2, mixed_version=version):
+                return version
+        except ValueError:
+            pass
+    return None

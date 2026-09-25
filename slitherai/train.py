@@ -171,7 +171,7 @@ def validate_mixed_reference_layout(config, population_size, training_games,
     if (population_size != 256 or config.maps != 32 or config.worms != 16
             or training_games != 2 or validation_every != 5):
         raise ValueError('Mixed-reference requires population=256, maps=32, worms=16, '
-                         'two 45-second games per genome, and validation every five generations')
+                         'two versioned-duration games per genome, and validation every five generations')
     return config.maps
 
 
@@ -641,7 +641,18 @@ class Trainer:
     def train(self, population=256, generations=50, seconds=None, resume=None,
               initialize_from=None, sensor_version_explicit=False,
               sensor_chunk_explicit=False):
-        protocol = protocol_settings(self.opponent_mode, self.training_games)
+        resume_settings = read_json(self.run / 'settings.json', {}) if resume else None
+        if resume and self.opponent_mode == 'mixed-reference':
+            saved_protocol = resume_settings.get('protocol')
+            saved_version = mixed_reference_protocol_version(saved_protocol)
+            if (saved_version is None
+                    or saved_protocol.get('games_per_genome') != self.training_games):
+                raise ValueError('Evaluation protocol changed: start a new session instead of mixing fitness histories')
+            protocol = saved_protocol
+            if seconds is None:
+                seconds = resume_settings.get('seconds')
+        else:
+            protocol = protocol_settings(self.opponent_mode, self.training_games)
         if seconds is None:
             seconds = protocol.get('seconds_per_game', 90.)
         if population < 4 or generations < 1 or seconds <= 0:
@@ -654,14 +665,14 @@ class Trainer:
             validate_mixed_reference_layout(
                 self.config, population, self.training_games, self.validation_every)
             if seconds != protocol['seconds_per_game']:
-                raise ValueError('Mixed-reference training episodes are fixed at 45 seconds')
+                raise ValueError('Mixed-reference episode duration must match the saved protocol')
         self.population_size, self.generations, self.episode_seconds = population, generations, seconds
         random.seed(self.seed)
         np.random.seed(self.seed)
         if self.config.reward_version != REWARD_VERSION:
             raise ValueError('This trainer requires growth-v2; preserve legacy runs and start a new session')
         if resume:
-            settings = read_json(self.run / 'settings.json', {})
+            settings = resume_settings
             saved_protocol = settings.get('protocol')
             if self.opponent_mode == 'selfplay':
                 if (selfplay_protocol_version(saved_protocol) is None
@@ -669,9 +680,9 @@ class Trainer:
                     raise ValueError('Evaluation protocol changed: start a new session instead of mixing fitness histories')
                 protocol = saved_protocol
             elif self.opponent_mode == 'mixed-reference':
-                if (mixed_reference_protocol_version(saved_protocol) != 1
+                if (mixed_reference_protocol_version(saved_protocol) is None
                         or saved_protocol.get('games_per_genome') != self.training_games
-                        or settings.get('seconds') != 45
+                        or settings.get('seconds') != protocol['seconds_per_game']
                         or settings.get('validation_every') != 5):
                     raise ValueError('Evaluation protocol changed: start a new session instead of mixing fitness histories')
                 protocol = saved_protocol
@@ -764,7 +775,7 @@ def main():
     p.add_argument('--population', type=int, default=256)
     p.add_argument('--generations', type=int, default=50)
     p.add_argument('--seconds', type=float,
-                   help='training episode duration; mixed-reference is fixed at 45 seconds')
+                   help='training episode duration; mixed-reference uses the versioned protocol duration')
     p.add_argument('--foods', type=int, default=1024)
     p.add_argument('--body-points', type=int, default=96)
     p.add_argument('--arena-radius', type=float, default=2400)
@@ -783,7 +794,7 @@ def main():
     start_from.add_argument('--initialize-from', help='trusted local checkpoint-N; starts a new run and resets fitness/species history')
     args = p.parse_args()
     maps = args.maps if args.maps is not None else (32 if args.opponent_mode == 'mixed-reference' else 64)
-    seconds = args.seconds if args.seconds is not None else (45 if args.opponent_mode == 'mixed-reference' else 90)
+    seconds = args.seconds
     training_games = (args.training_games if args.training_games is not None else
                       2 if args.opponent_mode == 'mixed-reference' else 5)
     config = SimConfig(maps=maps, worms=args.worms, foods=args.foods,

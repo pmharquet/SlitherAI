@@ -130,7 +130,7 @@ def start(options: StartOptions):
                  2 if mode == 'mixed-reference' else 5)
         maps = (32 if mode == 'mixed-reference' and 'maps' not in options.model_fields_set
                 else options.maps)
-        seconds = (45 if mode == 'mixed-reference' and 'seconds' not in options.model_fields_set
+        seconds = (90 if mode == 'mixed-reference' and 'seconds' not in options.model_fields_set
                    else options.seconds)
         try:
             protocol_settings(mode, games)
@@ -139,8 +139,8 @@ def start(options: StartOptions):
         if mode == 'selfplay' and options.maps * options.worms != options.population:
             raise fastapi.HTTPException(400, 'Self-play exige maps × worms = population (256 génomes, 16 vers : 16 cartes).')
         if mode == 'mixed-reference' and (options.population != 256 or maps != 32
-                or options.worms != 16 or seconds != 45):
-            raise fastapi.HTTPException(400, 'Mixed-reference exige 256 génomes, 32 cartes, 16 vers et des parties de 45 secondes.')
+                or options.worms != 16 or seconds != 90):
+            raise fastapi.HTTPException(400, 'Mixed-reference v2 exige 256 génomes, 32 cartes, 16 vers et des parties de 90 secondes.')
         run = RUNS / datetime.now().strftime('%Y%m%d-%H%M%S-%f')
         run.mkdir(parents=True)
         command += ['--maps', str(maps), '--worms', str(options.worms), '--population', str(options.population),
