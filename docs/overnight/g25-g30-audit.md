@@ -23,10 +23,10 @@ Le gagnant de sélection G25 est le génome `4107`; celui de G30 est `5545`. Ils
 
 | Champion | Espèce / taille | Nœuds | Connexions totales / actives | Empreinte canonique du génotype |
 |---|---:|---:|---:|---|
-| G25, ID 4107 | 31 / 10 | 4 | 115 / 95 | `b930fdf0a7534ff78f70bc3c7ae63bc9f0c20d6f80f65a7b0bddb1bd650f4d55` |
-| G30, ID 5545 | 10 / 10 | 4 | 112 / 103 | `d17529f0995845a1db0a480d7d07bd817f3691e51755d54ee45995cacbb5d416` |
+| G25, ID 4107 | 31 / 10 | 4 | 115 / 95 | `1101711c875b87308d7db7ec397316957aeae3b2f84c29215809e6eb212ce7a9` |
+| G30, ID 5545 | 10 / 10 | 4 | 112 / 103 | `6b22a74f0c68201d4e5ca834938288ec0b2b087102e6d32693face576b30dd5c` |
 
-Les deux gardent les mêmes sorties `boost_probability` et `absolute_direction_turns`, mais ne sont pas le même réseau : 7 connexions partagent leurs extrémités et seulement 2 sont activées dans les deux. Les sorties enregistrées montrent aussi G30 sans boost dépensé sur les 32 cartes, contre `0,066` en moyenne pour G25. C’est compatible avec une modification de comportement émergent; cela ne prouve pas que la topologie ou le virage explique à elle seule la baisse de score.
+Ces empreintes utilisent la fonction commune [`_genome_hash`](../../slitherai/evaluate_holdout.py), sur l’id/biais/réponse/activation/agrégation des nœuds et la source/cible/poids/état activé/innovation des connexions. Le génome G25/ID `4107` du checkpoint 25 est identique champ par champ à celui de `best-validation.pkl` (validation index 24); l’export `best-validation-network.json` correspond aussi exactement à ses poids et états activés. Le hash G25 cohérent dans les deux audits est donc `110171…212ce7a9`; les valeurs précédentes divergentes provenaient de sérialisations différentes, non d’un changement réel du génome. Les deux champions gardent les mêmes sorties `boost_probability` et `absolute_direction_turns`, mais ne sont pas le même réseau : 7 connexions partagent leurs extrémités et seulement 2 sont activées dans les deux. Les sorties enregistrées montrent aussi G30 sans boost dépensé sur les 32 cartes, contre `0,066` en moyenne pour G25. C’est compatible avec une modification de comportement émergent; cela ne prouve pas que la topologie ou le virage explique à elle seule la baisse de score.
 
 | Génération | Espèces | Score moyen / ancrage moyen | Rotative moyenne (écart-type population) | Champion sélection : ID, score / ancrage / rotative |
 |---|---:|---:|---:|---:|

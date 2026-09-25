@@ -21,13 +21,13 @@ Les scores des fichiers [`episodes/generation-0014.json`](../../runs/20260924-16
 
 | | G15 / ID 2867 | G25 / ID 4107 |
 |---|---:|---:|
-| Empreinte canonique des gènes | `1812a14769e0fa55b92a6552f4ee86a8bd2a2eb30e8293403577c52300fed3ba` | `b6e4936ca176e74fbb07df64c1a5c0aa2962b69ce3a6277e2ddb92d034ff3b29` |
+| Empreinte canonique des gènes | `6e500a41c100865e361bdf00f1cc3003ab377179a31f7e2aef2fc961ed33fae0` | `1101711c875b87308d7db7ec397316957aeae3b2f84c29215809e6eb212ce7a9` |
 | Nœuds (sorties et cachés) | 3 | 4 |
 | Gènes de connexion / activés | 109 / 98 | 115 / 95 |
 | Espèce / taille dans le checkpoint | 14 / 11 | 31 / 10 |
 | Seuil du checkpoint | 2,981 | 3,781 |
 
-Le nœud caché G15 (`7`) disparaît; G25 ajoute les nœuds `353` et `500`. Les réseaux partagent 11 connexions par extrémités; 85 connexions activées sont propres à G25 et 88 propres à G15. Les 11 poids communs diffèrent (écart absolu moyen `0,192`). C’est une modification de politique/topologie, pas le même champion réévalué. Les IDs d’espèce sont des étiquettes; on ne peut pas interpréter à eux seuls un passage d’une niche à l’autre.
+Ces empreintes utilisent la fonction commune [`_genome_hash`](../../slitherai/evaluate_holdout.py), sur les champs de nœud (id, biais, réponse, activation, agrégation) et de connexion (source, cible, poids, état activé, innovation). La copie G25/ID `4107` du checkpoint 25 et le génome de `best-validation.pkl` sont identiques champ par champ; `best-validation-network.json` correspond également aux mêmes nœuds, connexions, poids et états activés. Le nœud caché G15 (`7`) disparaît; G25 ajoute les nœuds `353` et `500`. Les réseaux partagent 11 connexions par extrémités; 85 connexions activées sont propres à G25 et 88 propres à G15. Les 11 poids communs diffèrent (écart absolu moyen `0,192`). C’est une modification de politique/topologie, pas le même champion réévalué. Les IDs d’espèce sont des étiquettes; on ne peut pas interpréter à eux seuls un passage d’une niche à l’autre.
 
 Les deux réseaux gardent les mêmes sorties `boost_probability` et `absolute_direction_turns`. Sur la validation, le `turn_degrees` moyen passe de `16,38°` à `18,94°` par décision (+`2,56°`, SE `1,58`, IC 95 % [−`0,67°`; +`5,79°`]); il est plus élevé sur 23 cartes et plus bas sur 9. Le boost reste rare : `boost_fraction` vaut `0,1476 %` puis `0,1463 %` des décisions; `boost_spent` moyen baisse de `0,1313` à `0,0656`, avec 9 cartes utilisant du boost pour G15 et 5 pour G25. Ces agrégats sont compatibles avec une politique qui tourne davantage et booste peu, mais aucun journal d’actions pas à pas n’est sauvegardé pour attribuer la hausse de fitness à une stratégie précise.
 
