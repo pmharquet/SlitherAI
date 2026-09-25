@@ -50,7 +50,8 @@ def replay(genome, neat_config, config, *, seed, seconds, device='cpu'):
     rows = torch.arange(maps, device=device)
     focal_np = np.arange(maps, dtype=np.int64) * 7 % worms
     focal = torch.as_tensor(focal_np, dtype=torch.long, device=device)
-    network = BatchedNetwork([genome] * maps, neat_config, device=device)
+    network = (BatchedNetwork([genome] * maps, neat_config, device=device)
+               if genome is not None else None)
     limits = round(float(seconds) / config.dt)
     if limits < 1:
         raise ValueError('seconds must include at least one simulation tick')
@@ -66,15 +67,21 @@ def replay(genome, neat_config, config, *, seed, seconds, device='cpu'):
     turn_observations = 0
     alive_clearance_sum = 0.0
     alive_clearance_count = 0
+    first_border_tick = torch.full((maps,), -1, dtype=torch.long, device=device)
+    phase_alive_ticks = [0, 0, 0]
+    phase_border_ticks = [0, 0, 0]
+    border_polar_turn = torch.zeros(maps, device=device)
 
-    for _ in range(limits):
+    for tick in range(limits):
         observations = world.observe().reshape(maps, worms, -1)
         inputs = observations[rows, focal]
         actions = heuristic(observations.flatten(0, 1)).reshape(maps, worms, 2)
-        actions[rows, focal] = network.activate(inputs)
+        if network is not None:
+            actions[rows, focal] = network.activate(inputs)
 
         was_alive = world.alive[rows, focal].clone()
         old_heading = world.heading[rows, focal].clone()
+        old_head = world.head[rows, focal].clone()
         old_gained = world.gained[rows, focal].clone()
         clearance = (world.arena - world.head[rows, focal].norm(dim=-1)
                      - world.radius[rows, focal]).clamp_min(0)
@@ -82,6 +89,12 @@ def replay(genome, neat_config, config, *, seed, seconds, device='cpu'):
         relative_clearance = clearance / arena_radius
         total_possible_ticks += maps
         alive_ticks += int(was_alive.sum().item())
+        near_border = was_alive & (relative_clearance < 0.10)
+        first_border_tick = torch.where((first_border_tick < 0) & near_border,
+                                        torch.full_like(first_border_tick, tick), first_border_tick)
+        phase = min(2, tick * 3 // limits)
+        phase_alive_ticks[phase] += int(was_alive.sum().item())
+        phase_border_ticks[phase] += int(near_border.sum().item())
         if bool(was_alive.any()):
             alive_clearance_sum += float(relative_clearance[was_alive].sum().item())
             alive_clearance_count += int(was_alive.sum().item())
@@ -90,6 +103,10 @@ def replay(genome, neat_config, config, *, seed, seconds, device='cpu'):
             near_ticks[str(fraction)] += int(near.sum().item())
 
         world.step(actions)
+        new_head = world.head[rows, focal]
+        polar_delta = torch.atan2(old_head[:, 0] * new_head[:, 1] - old_head[:, 1] * new_head[:, 0],
+                                  (old_head * new_head).sum(-1))
+        border_polar_turn += torch.where(near_border & world.alive[rows, focal], polar_delta, 0.)
         gained_now = (world.gained[rows, focal] - old_gained).clamp_min(0)
         for fraction in BORDER_FRACTIONS:
             near = was_alive & (relative_clearance < fraction)
@@ -132,6 +149,17 @@ def replay(genome, neat_config, config, *, seed, seconds, device='cpu'):
         },
         'mean_clearance_fraction_while_alive': (
             alive_clearance_sum / alive_clearance_count if alive_clearance_count else None),
+        'first_10pct_border_entry_seconds_by_map': [
+            (float(tick) * config.dt if tick >= 0 else None)
+            for tick in first_border_tick.detach().cpu().tolist()
+        ],
+        'within_10pct_border_alive_tick_fraction_by_episode_third': [
+            near / alive if alive else None
+            for near, alive in zip(phase_border_ticks, phase_alive_ticks)
+        ],
+        'signed_polar_orbits_while_near_10pct_by_map': [
+            float(v) / math.tau for v in border_polar_turn.detach().cpu().tolist()
+        ],
         'mean_absolute_heading_change_degrees_per_alive_tick': (
             math.degrees(abs_turn_radians / turn_observations)
             if turn_observations else None),
@@ -162,6 +190,8 @@ def main(argv=None):
                         help=f'validation seed (default: {VALIDATION_SEED})')
     parser.add_argument('--device', choices=('cpu', 'cuda'), default='cpu',
                         help='execution device (default: cpu)')
+    parser.add_argument('--include-heuristic', action='store_true',
+                        help='replay the existing heuristic as an additional focal controller')
     parser.add_argument('--output', type=Path,
                         help='optional JSON output path; stdout is always written')
     args = parser.parse_args(argv)
@@ -196,6 +226,14 @@ def main(argv=None):
             'sensor_version': source['sensor_version'],
         })
         candidates.append(result)
+
+    if args.include_heuristic:
+        baseline_config = dataclasses.replace(config, maps=args.maps)
+        baseline = replay(None, None, baseline_config, seed=args.seed,
+                          seconds=args.seconds, device=args.device)
+        baseline['controller'] = 'existing slitherai.evaluation.heuristic'
+        baseline['sensor_version'] = baseline_config.sensor_version
+        candidates.append(baseline)
 
     report = {
         'diagnostic': 'border_behavior_replay_v1',
